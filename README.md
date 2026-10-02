@@ -14,6 +14,7 @@ Two ways in. The **Claude Code plugin** installs the skills as a managed bundle 
 ```bash
 claude plugin marketplace add Nodge/skills
 claude plugin install agent-runbook-authoring@nodge-skills
+claude plugin install runbook-task-cycle@nodge-skills
 claude plugin install consensus@nodge-skills
 ```
 
@@ -22,6 +23,7 @@ Or from inside a session:
 ```
 /plugin marketplace add Nodge/skills
 /plugin install agent-runbook-authoring@nodge-skills
+/plugin install runbook-task-cycle@nodge-skills
 /plugin install consensus@nodge-skills
 ```
 
@@ -55,9 +57,13 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 
 ### agent-runbook-authoring
 
-Writes **runbooks**: procedures an agent session runs through subagents. Implement, run the checks, review with two models, triage, fix, verify, ask a human when the fix rounds run out. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next. [Read more](skills/agent-runbook-authoring).
+Writes **runbooks**: procedures an agent session runs through subagents, of which the task cycle below is one. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next. [Read more](skills/agent-runbook-authoring).
 
-[`examples/`](examples) has a complete runbook for one coding task with two independent reviewers, a tiny project to try it on, and the files of a real run.
+[`examples/`](examples) has a tiny project to try the task cycle on and the files of a real run.
+
+### runbook-task-cycle
+
+One coding task end to end: a coder implements the brief, a cheap model runs the checks, two models from different vendors review independently, an arbiter triages their findings, the coder fixes, a verifier checks the fixes, a last pass cleans up comments and wording. Every step is a [throng](https://github.com/Nodge/throng-mcp) thronglet. A project adapts it with one profile file: its checks, its version control, its rules, its models. [Read more](skills/runbook-task-cycle).
 
 ### consensus
 

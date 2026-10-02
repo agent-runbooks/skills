@@ -8,6 +8,15 @@
   },
   "plugins": [
     {
+      "name": "runbook-task-cycle",
+      "description": "One coding task end to end: a coder, the project's checks, two independent reviews by different models, triage, fix rounds with verification, a polish pass. Every step is a throng thronglet; a project adapts it with one profile file.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/runbook-task-cycle"
+      ]
+    },
+    {
       "name": "agent-runbook-authoring",
       "description": "Writes runbooks: procedures an agent session runs through subagents. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next.",
       "source": "./",

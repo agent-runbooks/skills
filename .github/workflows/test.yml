@@ -18,8 +18,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m unittest test_runbook -v
         working-directory: skills/agent-runbook-authoring/references
-      - name: The example runbook is consistent and carries the current engine
+      - name: The task cycle runbook is consistent and carries the current engine
         if: matrix.python == '3.13'
         run: |
-          cmp skills/agent-runbook-authoring/references/runbook.py examples/runbook-task-cycle/runbook.py
-          cd examples/runbook-task-cycle && python flow.py --check
+          cmp skills/agent-runbook-authoring/references/runbook.py skills/runbook-task-cycle/runbook.py
+          cd skills/runbook-task-cycle && python flow.py --check

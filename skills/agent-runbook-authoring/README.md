@@ -43,7 +43,7 @@ What this costs. The flow branches on a few typed fields of a reply, loops withi
 
 ## Mixing models
 
-Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP server that runs Claude Code, Codex or OpenCode as subagents of each other. Any step of a runbook can go to any harness and model: a Codex coder, an OpenCode model as a cheap checker, a reviewer from another vendor that catches what the first one missed. [`examples/runbook-task-cycle`](../../examples/runbook-task-cycle) shows the one-line change.
+Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP server that runs Claude Code, Codex or OpenCode as subagents of each other. Any step of a runbook can go to any harness and model: a Codex coder, an OpenCode model as a cheap checker, a reviewer from another vendor that catches what the first one missed. [`runbook-task-cycle`](../runbook-task-cycle) runs every step that way, with the agent of each executor as an input of the run.
 
 ## Limits
 
