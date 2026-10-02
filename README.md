@@ -14,6 +14,7 @@ Two ways in. The **Claude Code plugin** installs the skills as a managed bundle 
 ```bash
 claude plugin marketplace add Nodge/skills
 claude plugin install agent-runbook-authoring@nodge-skills
+claude plugin install consensus@nodge-skills
 ```
 
 Or from inside a session:
@@ -21,6 +22,7 @@ Or from inside a session:
 ```
 /plugin marketplace add Nodge/skills
 /plugin install agent-runbook-authoring@nodge-skills
+/plugin install consensus@nodge-skills
 ```
 
 </details>
@@ -56,6 +58,10 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 Writes **runbooks**: procedures an agent session runs through subagents. Implement, run the checks, review with two models, triage, fix, verify, ask a human when the fix rounds run out. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next. [Read more](skills/agent-runbook-authoring).
 
 [`examples/`](examples) has a complete runbook for one coding task with two independent reviewers, a tiny project to try it on, and the files of a real run.
+
+### consensus
+
+Think a question through with a second model: `/consensus codex/gpt-6-sol <question>`. The session you are in and the model you named answer **independently**, then reconcile round by round under one set of rules: reply to every open point with what convinced you or what you checked, concede only when refuted, stop at two CONVERGED in a row. The report is what both stand behind, what was contested, and what stayed open. Needs [throng](https://github.com/Nodge/throng-mcp). [Read more](skills/consensus).
 
 ## License
 

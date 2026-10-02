@@ -12,7 +12,18 @@
       "description": "Writes runbooks: procedures an agent session runs through subagents. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next.",
       "source": "./",
       "strict": false,
-      "skills": ["./skills/agent-runbook-authoring"]
+      "skills": [
+        "./skills/agent-runbook-authoring"
+      ]
+    },
+    {
+      "name": "consensus",
+      "description": "Think a question through with a second model: both form positions independently, then reconcile round by round until they agree or the crux is clear. Needs the throng MCP server.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/consensus"
+      ]
     }
   ]
 }
