@@ -41,10 +41,6 @@ What this costs. The flow branches on a few typed fields of a reply, loops withi
 | Branching | computed by `flow.py` | computed by the script | computed by the code |
 | How a step is done | the orchestrator's call | the script's | the code's |
 
-## In practice
-
-TODO: runs, end statuses, orchestrator deviations per run.
-
 ## Mixing models
 
 Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP server that runs Claude Code, Codex or OpenCode as subagents of each other. Any step of a runbook can go to any harness and model: a Codex coder, an OpenCode model as a cheap checker, a reviewer from another vendor that catches what the first one missed. [`examples/runbook-task-cycle`](../../examples/runbook-task-cycle) shows the one-line change.
@@ -54,6 +50,7 @@ Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP se
 - The orchestrating session must be able to launch subagents and learn when they finish.
 - The engine computes transitions. Whether the orchestrator follows the execution rules is still up to the model; `progress.md` and the review checklist make deviations visible, not impossible.
 - Tested only with Claude Code as the orchestrator. Other harnesses that meet the first point will likely work; I haven't tried them.
+- Six runs so far, one of them a real ticket with two fix rounds. No wrong transition in any; the departures the orchestrator logged were about the harness (foreground launches when nested under throng, an Agent tool with no cwd), not the flow. The failure path held once: a run with a failing test planted outside the brief ended as `failed` pointing at `checks.md`.
 
 ## Contents
 
