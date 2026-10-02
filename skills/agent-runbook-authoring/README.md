@@ -31,6 +31,8 @@ The nearest relatives are [Claude Code workflows](https://code.claude.com/docs/e
 
 **The orchestrator keeps its judgement.** A script decides everything. `flow.py` decides only what comes next; how a step is carried out stays with the orchestrating model. It maps the executor onto its harness and reads the step as a task, not an instruction. One example from real runs: an implementation step split across three or four subagents when the brief divided well. A script would have needed that case written in.
 
+**The human is in the room.** The run is a conversation in the session the human already has open. A human step is a question in that chat, and the answer is words, not a button: the orchestrator maps them onto a choice, and `flow.py` writes them to a file for the steps that follow. Between steps the human can interject the same way: ask what a step found, argue with a review, change the brief, stop. A Claude Code workflow runs in the background as a task. It returns a task id, the session watches it, and nothing in the script can ask the user anything until it ends. A code orchestrator can pause for input, but the pause, the channel and the UI are yours to build.
+
 What this costs. The flow branches on a few typed fields of a reply, loops within a budget and joins parallel steps with `after`; a workflow script can fan out over a thousand items or loop until a count. And the rules hold as far as the model follows them, see [Limits](#limits).
 
 | | Runbook | Claude Code workflow | Code orchestrator |
@@ -40,6 +42,7 @@ What this costs. The flow branches on a few typed fields of a reply, loops withi
 | Reading | prompt files and a step list | JavaScript | an application |
 | Branching | computed by `flow.py` | computed by the script | computed by the code |
 | How a step is done | the orchestrator's call | the script's | the code's |
+| Talking to the human | a question in the session, any time | none until the task ends | an interrupt and a UI you build |
 
 ## Mixing models
 
