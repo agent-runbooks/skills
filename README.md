@@ -55,17 +55,17 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 
 ## Skills
 
-### agent-runbook-authoring
+### ◆ agent-runbook-authoring
 
 Writes **runbooks**: procedures an agent session runs through subagents, of which the task cycle below is one. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next. [Read more](skills/agent-runbook-authoring).
 
 [`examples/`](examples) has a tiny project to try the task cycle on and the files of a real run.
 
-### runbook-task-cycle
+### ◆ runbook-task-cycle
 
 One coding task end to end: a coder implements the brief, a cheap model runs the checks, two models from different vendors review independently, an arbiter triages their findings, the coder fixes, a verifier checks the fixes, a last pass cleans up comments and wording. Every step is a [throng](https://github.com/Nodge/throng-mcp) thronglet. A project adapts it with one profile file: its checks, its version control, its rules, its models. [Read more](skills/runbook-task-cycle).
 
-### consensus
+### ◆ consensus
 
 Think a question through with a second model: `/consensus codex/gpt-6-sol <question>`. The session you are in and the model you named answer **independently**, then reconcile round by round under one set of rules: reply to every open point with what convinced you or what you checked, concede only when refuted, stop at two CONVERGED in a row. The report is what both stand behind, what was contested, and what stayed open. Needs [throng](https://github.com/Nodge/throng-mcp). [Read more](skills/consensus).
 
