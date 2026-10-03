@@ -8,20 +8,12 @@
   },
   "plugins": [
     {
-      "name": "agent-runbook-authoring",
-      "description": "Writes runbooks: procedures an agent session runs through subagents. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next.",
+      "name": "agent-runbooks",
+      "description": "Writes runbooks: procedures an agent session runs through subagents, with steps as prompt files and transitions as a few lines of Python on a small engine. Shows the progress of a run: a text status after every step and a read-only page on localhost with each step's log and output files.",
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/agent-runbook-authoring"
-      ]
-    },
-    {
-      "name": "runbook-viewer",
-      "description": "Shows the progress of a runbook run: a text status the orchestrator prints after every step, and a read-only page on localhost with each step's log and output files.",
-      "source": "./",
-      "strict": false,
-      "skills": [
+        "./skills/agent-runbook-authoring",
         "./skills/runbook-viewer"
       ]
     }

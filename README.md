@@ -6,23 +6,21 @@ Agent skills I use in my daily work, in the [Agent Skills](https://agentskills.i
 
 ## Install
 
-Two ways in. The **Claude Code plugin** installs the skills as a managed bundle that updates when I push. The **[skills CLI](https://github.com/vercel-labs/skills)** copies the skill files into your project or home directory, for any agent, as files you own and can edit. Pick one, otherwise each skill shows up twice.
+Two ways in. The **Claude Code plugin** installs both skills as one managed bundle that updates when I push. The **[skills CLI](https://github.com/vercel-labs/skills)** copies the skill files into your project or home directory, for any agent, as files you own and can edit. Pick one, otherwise each skill shows up twice.
 
 <details>
 <summary><strong>Claude Code plugin</strong></summary>
 
 ```bash
 claude plugin marketplace add agent-runbooks/skills
-claude plugin install agent-runbook-authoring@agent-runbooks
-claude plugin install runbook-viewer@agent-runbooks
+claude plugin install agent-runbooks@agent-runbooks
 ```
 
 Or from inside a session:
 
 ```
 /plugin marketplace add agent-runbooks/skills
-/plugin install agent-runbook-authoring@agent-runbooks
-/plugin install runbook-viewer@agent-runbooks
+/plugin install agent-runbooks@agent-runbooks
 ```
 
 </details>
