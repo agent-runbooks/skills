@@ -18,6 +18,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m unittest test_runbook -v
         working-directory: skills/agent-runbook-authoring/references
+      - run: python -m unittest test_view -v
+        working-directory: skills/runbook-viewer
       - name: The task cycle runbook is consistent and carries the current engine
         if: matrix.python == '3.13'
         run: |

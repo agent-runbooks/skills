@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runbook run</title>
+<style>
+:root {
+  --bg: #f3f3f4;
+  --panel: #ffffff;
+  --ink: #18181b;
+  --muted: #66666f;
+  --rule: #dcdce0;
+  --select: #e9e9ec;
+  --done: #66666f;
+  --ok: #2c7548;
+  --running: #2457c5;
+  --waiting: #8f520c;
+  --failed: #b3312f;
+  --add-bg: #dff1e3;
+  --del-bg: #f8e1df;
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131314;
+    --panel: #19191b;
+    --ink: #e4e4e7;
+    --muted: #8b8b93;
+    --rule: #2a2a2e;
+    --select: #232327;
+    --done: #9a9aa2;
+    --ok: #7cc492;
+    --running: #8ab4f8;
+    --waiting: #e2a55a;
+    --failed: #ec7b72;
+    --add-bg: #18301f;
+    --del-bg: #3a2020;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  display: flex;
+  flex-direction: column;
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--running); outline-offset: 1px; }
+
+header {
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-family: var(--mono); }
+.title h1 { font-size: 16px; margin: 0; font-weight: 600; }
+.title #runbook { color: var(--muted); }
+#status {
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--muted);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+#status.chip-ok { color: var(--ok); }
+#status.chip-attention { color: var(--waiting); }
+#status.chip-failed { color: var(--failed); }
+#status:empty { display: none; }
+.inputs-box { margin: 8px 0 0; font: 12px/1.45 var(--mono); }
+.inputs-box summary { cursor: pointer; width: fit-content; max-width: 100%; }
+.inputs-box summary span { color: var(--muted); margin-left: 6px; }
+.inputs-box[open] summary span { display: none; }
+.inputs {
+  margin: 6px 0 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 1px 12px;
+  font: 12px/1.45 var(--mono);
+}
+.inputs dt { color: var(--muted); }
+.inputs dd { margin: 0; overflow-wrap: anywhere; }
+.notice { color: var(--failed); font: 12px var(--mono); margin-top: 6px; }
+
+main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 36%) minmax(0, 1fr);
+}
+nav {
+  border-right: 1px solid var(--rule);
+  overflow: auto;
+  padding: 10px 0 20px;
+}
+.nav-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 20px 6px;
+}
+.label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+#follow {
+  border: 1px solid var(--rule);
+  background: transparent;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#follow[aria-pressed="true"] { color: var(--muted); cursor: default; }
+
+.rows { display: grid; grid-template-columns: auto auto auto auto minmax(0, 1fr); font: 13px/1.4 var(--mono); }
+.row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; cursor: pointer; }
+.row > span { padding: 3px 0 3px 10px; white-space: nowrap; }
+.row > span:first-child { padding-left: 20px; }
+.row > span:last-child { padding-right: 20px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.row:hover, .row.selected { background: var(--select); }
+.row.selected { box-shadow: inset 3px 0 0 var(--running); }
+.row:focus-visible { outline-offset: -2px; }
+.row .exec { color: var(--muted); }
+.row .dur { text-align: right; font-variant-numeric: tabular-nums; }
+.mark-done { color: var(--done); }
+.mark-running { color: var(--running); }
+.mark-waiting_for_human { color: var(--waiting); font-weight: 700; }
+.mark-failed, .mark-blocked { color: var(--failed); }
+.row.waiting_for_human > span, .row.waiting_for_human > span:last-child { color: var(--waiting); }
+.mark-running.live { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .mark-running.live { animation: none; } }
+
+.files { margin: 18px 0 0; }
+.files .label { padding: 0 20px 4px; display: block; }
+.file-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 2px 20px;
+  font: 13px/1.5 var(--mono);
+  cursor: pointer;
+}
+.file-link:hover, .file-link.selected { background: var(--select); }
+.file-link.selected { box-shadow: inset 3px 0 0 var(--running); }
+.empty { padding: 0 20px; color: var(--muted); font-size: 13px; }
+
+#detail { overflow: auto; padding: 16px 28px 40px; background: var(--panel); }
+.detail-head { font: 600 15px var(--mono); margin: 0 0 10px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.detail-head .meta { font-weight: 400; color: var(--muted); font-size: 13px; }
+.ask {
+  border-left: 3px solid var(--waiting);
+  padding: 8px 14px;
+  margin: 0 0 16px;
+  background: var(--bg);
+}
+.ask strong { color: var(--waiting); }
+.ask p { margin: 4px 0; }
+.log {
+  font: 12px/1.55 var(--mono);
+  color: var(--muted);
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+.doc { border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 18px; }
+.doc:first-of-type { margin-top: 0; }
+.doc-name { font: 12px var(--mono); color: var(--muted); margin-bottom: 6px; }
+
+.md { max-width: 80ch; overflow-wrap: break-word; }
+.md h1, .md h2, .md h3, .md h4 { line-height: 1.25; margin: 1.2em 0 .4em; }
+.md h1 { font-size: 20px; }
+.md h2 { font-size: 16px; }
+.md h3, .md h4 { font-size: 14px; }
+.md > :first-child { margin-top: 0; }
+.md a { color: var(--running); }
+.md code { font: 12.5px var(--mono); background: var(--select); padding: 0 4px; border-radius: 3px; }
+.md pre code { background: none; padding: 0; }
+.md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--rule); padding: 3px 8px; text-align: left; vertical-align: top; }
+.md blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--rule); color: var(--muted); }
+pre {
+  font: 12.5px/1.5 var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+.raw { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff span { display: block; }
+.diff .add { background: var(--add-bg); }
+.diff .del { background: var(--del-bg); }
+.diff .hunk { color: var(--running); }
+.diff .head { color: var(--muted); }
+
+@media (max-width: 899px) {
+  main { display: block; overflow: auto; }
+  nav { border-right: 0; border-bottom: 1px solid var(--rule); overflow: visible; }
+  #detail { overflow: visible; padding: 16px 20px 40px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title"><h1 id="name">…</h1><span id="runbook"></span><span id="status"></span></div>
+  <details class="inputs-box">
+    <summary>inputs <span id="inputs-names"></span></summary>
+    <dl class="inputs" id="inputs"></dl>
+  </details>
+  <div class="notice" id="notice" hidden></div>
+</header>
+<main>
+  <nav>
+    <div class="nav-head"><span class="label">Sections</span><button id="follow" type="button" aria-pressed="true">following</button></div>
+    <div class="rows" id="sections"></div>
+    <div class="files"><span class="label">Run files</span><div id="run-files"></div></div>
+  </nav>
+  <section id="detail" aria-live="polite"></section>
+</main>
+<script src="marked.umd.js"></script>
+<script>
+'use strict';
+const MARKS = { done: '✓', running: '●', waiting_for_human: '?', failed: '✗', blocked: '!' };
+const OPEN = ['running', 'waiting_for_human'];
+const POLL_MS = 2000;
+// Run statuses with a chip colour of their own; running and any other end status stay grey.
+const CHIPS = { ready: 'ok', waiting_for_human: 'attention', needs_attention: 'attention', failed: 'failed' };
+
+// Text between raw HTML tags arrives as an `escaped` token that marked would emit as is.
+marked.use({
+  renderer: {
+    html({ text }) { return esc(text); },
+    text(token) { return token.escaped && !token.tokens ? esc(token.text) : false; },
+  },
+});
+
+let data = null;
+let clockOffset = 0;
+let follow = true;
+let selection = null;
+// shown.key is null while the column holds an incomplete render of shown.selection, so the next poll retries.
+let shown = { key: null, selection: null };
+let pendingKey = null;
+let navKey = null;
+const fileCache = new Map();
+
+const $ = (id) => document.getElementById(id);
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function parseTime(s) {
+  const t = typeof s === 'string' ? Date.parse(s) : NaN;
+  return Number.isNaN(t) ? null : t;
+}
+
+function duration(section, now) {
+  const start = parseTime(section.started_at);
+  const stop = OPEN.includes(section.status) ? now : parseTime(section.ended_at);
+  if (start === null || stop === null) return '';
+  const total = Math.max(0, Math.floor((stop - start) / 1000));
+  const h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, s = total % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+function summary(section) {
+  const reply = section.reply || {};
+  if (section.status === 'waiting_for_human') return 'waiting for the human';
+  if (section.status === 'failed' || section.status === 'blocked') return section.note || reply.reason || '';
+  if (section.status !== 'done') return '';
+  if (!section.reply) return section.note || '';
+  return Object.entries(reply).filter(([k]) => k !== 'status')
+    .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
+}
+
+function serverNow() {
+  return Date.now() + clockOffset;
+}
+
+function followTarget() {
+  const sections = data.state.sections;
+  const open = sections.find((s) => OPEN.includes(s.status));
+  const last = open || sections[sections.length - 1];
+  if (last) return { kind: 'section', id: last.id };
+  return data.run_files.length ? { kind: 'file', name: data.run_files[0] } : null;
+}
+
+function readHash() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has('section')) return { kind: 'section', id: params.get('section') };
+  if (params.has('file')) return { kind: 'file', name: params.get('file') };
+  return null;
+}
+
+function select(target) {
+  follow = false;
+  selection = target;
+  history.replaceState(null, '', '#' + new URLSearchParams(target.kind === 'section' ? { section: target.id } : { file: target.name }));
+  render();
+}
+
+function setFollow() {
+  follow = true;
+  history.replaceState(null, '', location.pathname);
+  render();
+}
+
+function sameSelection(a, b) {
+  return a && b && a.kind === b.kind && a.id === b.id && a.name === b.name;
+}
+
+function renderHeader() {
+  const st = data.state;
+  $('name').textContent = data.name;
+  $('runbook').textContent = st.runbook || '';
+  const status = $('status');
+  status.textContent = st.status || '';
+  status.className = CHIPS[st.status] ? 'chip-' + CHIPS[st.status] : '';
+  document.title = `${MARKS[st.status === 'ready' ? 'done' : st.status] || '·'} ${data.name}`;
+  const inputs = Object.entries(st.inputs || {});
+  $('inputs').innerHTML = inputs.map(([k, v]) =>
+    `<dt>${esc(k)}</dt><dd>${esc(typeof v === 'string' ? v : JSON.stringify(v))}</dd>`).join('');
+  $('inputs-names').textContent = inputs.map(([k]) => k).join(', ');
+}
+
+function renderNav() {
+  const key = JSON.stringify([data.state.sections, data.run_files, selection, follow]);
+  if (key === navKey) return;
+  navKey = key;
+  const now = serverNow();
+  const rows = data.state.sections.map((s) => {
+    const live = s.status === 'running' ? ' live' : '';
+    const selected = selection && selection.kind === 'section' && selection.id === s.id ? ' selected' : '';
+    const dur = OPEN.includes(s.status) && s.started_at ? ` data-start="${esc(s.started_at)}"` : '';
+    return `<div class="row ${esc(s.status)}${selected}" role="button" tabindex="0" data-section="${esc(s.id)}">` +
+      `<span class="mark-${esc(s.status)}${live}">${MARKS[s.status] || ' '}</span>` +
+      `<span>${esc(s.id)}</span><span class="exec">${esc(s.executor || '')}</span>` +
+      `<span class="dur"${dur}>${duration(s, now)}</span><span title="${esc(summary(s))}">${esc(summary(s))}</span></div>`;
+  });
+  $('sections').innerHTML = rows.join('') || '<div class="empty">No section has launched yet.</div>';
+  $('run-files').innerHTML = data.run_files.map((name) => {
+    const selected = selection && selection.kind === 'file' && selection.name === name ? ' selected' : '';
+    return `<button type="button" class="file-link${selected}" data-file="${esc(name)}">${esc(name)}</button>`;
+  }).join('') || '<div class="empty">None.</div>';
+  const button = $('follow');
+  button.setAttribute('aria-pressed', String(follow));
+  button.textContent = follow ? 'following' : 'follow';
+}
+
+function fileMeta(name) {
+  return data.files.find((f) => f.name === name);
+}
+
+async function fileHtml(name) {
+  const meta = fileMeta(name);
+  const cached = fileCache.get(name);
+  if (cached && meta && cached.size === meta.size && cached.mtime === meta.mtime) return cached.html;
+  const res = await fetch('/api/file?name=' + encodeURIComponent(name), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${name}: ${res.status}`);
+  const html = renderFile(name, await res.text());
+  if (meta) fileCache.set(name, { size: meta.size, mtime: meta.mtime, html });
+  return html;
+}
+
+function renderFile(name, text) {
+  if (/\.md$/i.test(name)) return `<div class="md">${marked.parse(text)}</div>`;
+  if (/\.(diff|patch)$/i.test(name)) {
+    // Lines left in the current hunk, from its @@ header: inside a hunk `---`/`+++` are content, not file headers.
+    let oldLeft = 0;
+    let newLeft = 0;
+    const lines = text.split('\n').map((line) => {
+      let cls = '';
+      if (line.startsWith('diff ')) {
+        oldLeft = newLeft = 0;
+        cls = 'head';
+      } else if (line.startsWith('@@')) {
+        const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+        oldLeft = m ? Number(m[1] ?? 1) : Infinity;
+        newLeft = m ? Number(m[2] ?? 1) : Infinity;
+        cls = 'hunk';
+      } else if (oldLeft > 0 || newLeft > 0) {
+        if (line.startsWith('+')) { newLeft--; cls = 'add'; }
+        else if (line.startsWith('-')) { oldLeft--; cls = 'del'; }
+        else if (!line.startsWith('\\')) { oldLeft--; newLeft--; }
+      } else if (/^(\+\+\+|---|index )/.test(line)) cls = 'head';
+      else if (line.startsWith('+')) cls = 'add';
+      else if (line.startsWith('-')) cls = 'del';
+      return `<span class="${cls}">${esc(line) || ' '}</span>`;
+    });
+    return `<pre class="diff">${lines.join('')}</pre>`;
+  }
+  return `<pre class="raw">${esc(text)}</pre>`;
+}
+
+function detailParts() {
+  if (!selection) return null;
+  if (selection.kind === 'file') {
+    if (!data.run_files.includes(selection.name)) return null;
+    return { title: selection.name, meta: '', log: [], files: [selection.name], ask: null };
+  }
+  const index = data.state.sections.findIndex((s) => s.id === selection.id);
+  if (index < 0) return null;
+  const section = data.state.sections[index];
+  const extra = data.sections[index];
+  let ask = null;
+  if (section.status === 'waiting_for_human') {
+    const prefix = `- ${section.id}: asked: `;
+    const line = extra.log.find((l) => l.startsWith(prefix));
+    ask = line ? line.slice(prefix.length) : '';
+  }
+  const meta = [section.status, section.executor].filter(Boolean).join(' · ');
+  return { title: section.id, meta, log: extra.log, files: extra.files, ask };
+}
+
+async function renderDetail() {
+  const parts = detailParts();
+  const key = JSON.stringify([selection, parts, parts && parts.files.map(fileMeta)]);
+  if (key === shown.key) {
+    pendingKey = null;
+    return;
+  }
+  if (key === pendingKey) return;
+  const detail = $('detail');
+  const moved = !sameSelection(shown.selection, selection);
+  if (!parts) {
+    pendingKey = null;
+    shown = { key, selection };
+    detail.innerHTML = '<p class="empty">Select a section or a file.</p>';
+    return;
+  }
+  pendingKey = key;
+  let html = `<h2 class="detail-head">${esc(parts.title)}<span class="meta">${esc(parts.meta)}</span></h2>`;
+  if (parts.ask !== null) {
+    html += `<div class="ask"><strong>Waiting for the human.</strong><p>${esc(parts.ask)}</p>` +
+      '<p>The answer is given in the chat with the orchestrator.</p></div>';
+  }
+  if (parts.log.length) html += `<ul class="log">${parts.log.map((l) => `<li>${esc(l.slice(2))}</li>`).join('')}</ul>`;
+  const docs = await Promise.allSettled(parts.files.map(fileHtml));
+  if (pendingKey !== key) return;
+  pendingKey = null;
+  const complete = docs.every((d) => d.status === 'fulfilled');
+  if (!complete && !moved) return;
+  html += parts.files.map((name, i) => {
+    const body = docs[i].status === 'fulfilled' ? docs[i].value : `<p class="empty">${esc(name)} could not be read.</p>`;
+    return `<div class="doc">${parts.files.length > 1 || parts.title !== name ? `<div class="doc-name">${esc(name)}</div>` : ''}${body}</div>`;
+  }).join('');
+  if (!parts.files.length && parts.ask === null) html += '<p class="empty">No output file yet.</p>';
+  const top = detail.scrollTop;
+  detail.innerHTML = html;
+  detail.scrollTop = moved ? 0 : top;
+  shown = { key: complete ? key : null, selection };
+}
+
+function render() {
+  if (!data) return;
+  if (follow) selection = followTarget();
+  renderHeader();
+  renderNav();
+  renderDetail();
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    if (res.ok) {
+      const first = !data;
+      data = await res.json();
+      // data.now is cut to the second: keep the largest sample so open durations do not step back.
+      const offset = Date.parse(data.now) - Date.now();
+      clockOffset = first || Math.abs(offset - clockOffset) > 2000 ? offset : Math.max(clockOffset, offset);
+      $('notice').hidden = true;
+      render();
+    }
+  } catch (e) {
+    $('notice').textContent = 'The viewer is not reachable. Showing the last state it sent.';
+    $('notice').hidden = false;
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+function tick() {
+  if (!data) return;
+  const now = serverNow();
+  for (const el of document.querySelectorAll('.dur[data-start]')) {
+    el.textContent = duration({ status: 'running', started_at: el.dataset.start }, now);
+  }
+}
+
+$('sections').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-section]');
+  if (row) select({ kind: 'section', id: row.dataset.section });
+});
+$('sections').addEventListener('keydown', (e) => {
+  const row = e.target.closest('[data-section]');
+  if (row && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    select({ kind: 'section', id: row.dataset.section });
+  }
+});
+$('run-files').addEventListener('click', (e) => {
+  const link = e.target.closest('[data-file]');
+  if (link) select({ kind: 'file', name: link.dataset.file });
+});
+$('follow').addEventListener('click', () => { if (!follow) setFollow(); });
+
+const fromHash = readHash();
+if (fromHash) { follow = false; selection = fromHash; }
+poll();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

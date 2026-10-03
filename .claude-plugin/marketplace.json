@@ -26,6 +26,15 @@
       ]
     },
     {
+      "name": "runbook-viewer",
+      "description": "Shows the progress of a runbook run: a text status the orchestrator prints after every step, and a read-only page on localhost with each step's log and output files.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/runbook-viewer"
+      ]
+    },
+    {
       "name": "consensus",
       "description": "Think a question through with a second model: both form positions independently, then reconcile round by round until they agree or the crux is clear. Needs the throng MCP server.",
       "source": "./",

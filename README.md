@@ -15,6 +15,7 @@ Two ways in. The **Claude Code plugin** installs the skills as a managed bundle 
 claude plugin marketplace add Nodge/skills
 claude plugin install agent-runbook-authoring@nodge-skills
 claude plugin install runbook-task-cycle@nodge-skills
+claude plugin install runbook-viewer@nodge-skills
 claude plugin install consensus@nodge-skills
 ```
 
@@ -24,6 +25,7 @@ Or from inside a session:
 /plugin marketplace add Nodge/skills
 /plugin install agent-runbook-authoring@nodge-skills
 /plugin install runbook-task-cycle@nodge-skills
+/plugin install runbook-viewer@nodge-skills
 /plugin install consensus@nodge-skills
 ```
 
@@ -63,7 +65,11 @@ Writes **runbooks**: procedures an agent session runs through subagents, of whic
 
 ### ◆ runbook-task-cycle
 
-One coding task end to end: a coder implements the brief, a cheap model runs the checks, two models from different vendors review independently, an arbiter triages their findings, the coder fixes, a verifier checks the fixes, a last pass cleans up comments and wording. Every step is a [throng](https://github.com/Nodge/throng-mcp) thronglet. A project adapts it with one profile file: its checks, its version control, its rules, its models. [Read more](skills/runbook-task-cycle).
+One coding task end to end: a coder implements the brief, a cheap model runs the checks, two models from different vendors review independently, an arbiter triages their findings, the coder fixes, a verifier checks the fixes, a last pass cleans up comments and wording. Every step is a [throng](https://github.com/Nodge/throng-mcp) thronglet. A project adapts it with one profile file: its checks, its version control, its rules, its models. With runbook-viewer installed, the orchestrator prints the run's status after every step. [Read more](skills/runbook-task-cycle).
+
+### ◆ runbook-viewer
+
+Shows where a runbook run is and what its steps wrote. After every step the orchestrator prints a text status into the chat, one line per step with its executor, time and reply. On request it starts a read-only page on localhost: the steps on the left, the selected step's log and output files on the right, following the run as it goes. Standard library Python, nothing to install. [Read more](skills/runbook-viewer).
 
 ### ◆ consensus
 
