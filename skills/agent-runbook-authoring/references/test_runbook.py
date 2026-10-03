@@ -11,6 +11,7 @@ import unittest
 from collections.abc import Callable
 from unittest import mock
 
+import runbook
 from runbook import Runbook, end, parallel
 
 
@@ -27,6 +28,15 @@ class RunbookTestCase(unittest.TestCase):
                 f.write(name)
         self.run_dir = os.path.join(os.path.realpath(tmp.name), 'run')
         self.cmd = f'{sys.executable} {self.here}/flow.py'
+        self.minute = 0
+        clock = mock.patch.object(runbook, 'utc_now', self.tick)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def tick(self) -> str:
+        """A fake clock: each call is one minute after the previous, from 2026-10-03T10:00:00Z."""
+        self.minute += 1
+        return f'2026-10-03T{10 + (self.minute - 1) // 60:02d}:{(self.minute - 1) % 60:02d}:00Z'
 
     def runbook(self, declare: Callable[[Runbook], None], **inputs: object) -> Runbook:
         """A Runbook as if constructed by <here>/flow.py, with repo=str and the given inputs."""
@@ -126,7 +136,8 @@ class StartTest(RunbookTestCase):
         out = self.start(self.rb)
         self.assertEqual(self.state(), {
             'runbook': 'runbook-test', 'status': 'running', 'inputs': {'repo': '/repo', 'rounds': 2},
-            'sections': [{'id': 'first', 'name': 'first', 'status': 'running', 'reply': None, 'note': None, 'answer': None}],
+            'sections': [{'id': 'first', 'name': 'first', 'status': 'running', 'reply': None, 'note': None,
+                          'answer': None, 'executor': 'light', 'started_at': '2026-10-03T10:00:00Z', 'ended_at': None}],
         })
         self.assertEqual(self.progress(), (
             '# Run run\n\nRunbook `runbook-test`. State in `state.json`. Inputs:\n\n'
@@ -438,6 +449,82 @@ class RelaunchTest(RunbookTestCase):
         self.assertEqual(self.first_line(out), 'launch commit-2 with executor main: Main model. Side effects: commit')
         self.assertIn('The tree may hold a partial earlier attempt.', out)
         self.assertEqual(self.state()['sections'][0]['note'], "relaunched on the human's yes")
+
+
+class TimingTest(RunbookTestCase):
+    """Each section records its executor, when it was opened and when it left an open status."""
+
+    def fields(self) -> list[tuple[str, str | None, str | None, str | None]]:
+        return [(s['id'], s['executor'], s['started_at'], s['ended_at']) for s in self.state()['sections']]
+
+    def test_launch_and_reply(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        self.assertEqual(self.fields(), [('first', 'light', '2026-10-03T10:00:00Z', None)])
+        self.reply(rb, 'first')
+        self.assertEqual(self.fields(), [('first', 'light', '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z'),
+                                         ('second', 'main', '2026-10-03T10:02:00Z', None)])
+
+    def test_failed_reply_ends_the_section(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        self.call(rb, 'reply', 'first', '{"status": "failed", "reason": "x"}')
+        self.assertEqual(self.fields(), [('first', 'light', '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z')])
+
+    def test_executor_function_is_recorded_by_its_resolved_name(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('go')
+            rb.step('go', executor=lambda s: 'main' if s.inputs.coder == 'big' else 'light',
+                    prompt='prompts/a.md', next=end('ready'))
+        rb = self.runbook(declare, coder='big')
+        self.start(rb)
+        self.assertEqual(self.state()['sections'][0]['executor'], 'main')
+
+    def test_answer(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('ask')
+            rb.human('ask', choices=['Continue', 'stop'], question='Continue?',
+                     next=lambda choice, s: 'go' if choice == 'Continue' else end('stopped'))
+            rb.step('go', executor='main', prompt='prompts/a.md', next=end('ready'))
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.assertEqual(self.fields(), [('ask', None, '2026-10-03T10:00:00Z', None)])
+        self.call(rb, 'answer', 'ask', 'Continue')
+        self.assertEqual(self.fields(), [('ask', None, '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z'),
+                                         ('go', 'main', '2026-10-03T10:02:00Z', None)])
+
+    def test_interrupted(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        self.call(rb, 'interrupted', 'first')
+        self.assertEqual(self.fields(), [('first', 'light', '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z'),
+                                         ('first-2', 'light', '2026-10-03T10:02:00Z', None)])
+
+    def test_relaunch_keeps_the_end_of_the_failed_section(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('commit')
+            rb.step('commit', executor='main', prompt='prompts/a.md', side_effects='commit', next=end('ready'))
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'commit', '{"status": "failed", "reason": "hook rejected"}')
+        self.call(rb, 'relaunch', 'commit')
+        self.assertEqual(self.fields(), [('commit', 'main', '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z'),
+                                         ('commit-2', 'main', '2026-10-03T10:02:00Z', None)])
+
+    def test_state_without_the_fields_resumes(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        with open(os.path.join(self.run_dir, 'state.json'), encoding='utf-8') as f:
+            data = json.load(f)
+        for section in data['sections']:
+            for name in ('executor', 'started_at', 'ended_at'):
+                del section[name]
+        with open(os.path.join(self.run_dir, 'state.json'), 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+        self.assertEqual(self.call(rb).strip(), 'still running: first')
+        self.assertEqual(self.first_line(self.reply(rb, 'first')), 'launch second with executor main: Main model')
+        self.assertEqual(self.fields(), [('first', None, None, '2026-10-03T10:01:00Z'),
+                                         ('second', 'main', '2026-10-03T10:02:00Z', None)])
 
 
 class CheckTest(RunbookTestCase):

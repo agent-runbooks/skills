@@ -4,7 +4,7 @@
 
 ## state.json
 
-The machine state: the run's inputs, its status, and one entry per launched section with `id` (`fix`, `fix-2`), `name`, `status` (`running`, `done`, `failed`, `blocked`, `waiting_for_human`), the `reply` as recorded, and a `note` (the human's choice, or why the section was abandoned: `interrupted`, `relaunched on the human's yes`). Sections are in launch order. A step that runs again gets a new section with a counter in its id. An abandoned section stays, and the replay skips it.
+The machine state: the run's inputs, its status, and one entry per launched section with `id` (`fix`, `fix-2`), `name`, `status` (`running`, `done`, `failed`, `blocked`, `waiting_for_human`), the `reply` as recorded, and a `note` (the human's choice, or why the section was abandoned: `interrupted`, `relaunched on the human's yes`). Since engine 1.1.0 a section also has `executor`, the executor name it was launched with, `null` for a human step; `started_at`, when it was opened; and `ended_at`, when it left `running` or `waiting_for_human`: a reply, an answer, `interrupted`. Times are UTC, `2026-10-03T14:05:12Z`. A `state.json` from an older engine has none of the three. Sections are in launch order. A step that runs again gets a new section with a counter in its id. An abandoned section stays, and the replay skips it.
 
 ## progress.md
 
