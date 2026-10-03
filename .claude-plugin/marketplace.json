@@ -1,10 +1,10 @@
 {
-  "name": "nodge-skills",
+  "name": "agent-runbooks",
   "owner": {
     "name": "Maksim Zemskov"
   },
   "metadata": {
-    "description": "Agent skills by Nodge"
+    "description": "Agent Runbooks: procedures an agent session runs through subagents"
   },
   "plugins": [
     {
@@ -32,15 +32,6 @@
       "strict": false,
       "skills": [
         "./skills/runbook-viewer"
-      ]
-    },
-    {
-      "name": "consensus",
-      "description": "Think a question through with a second model: both form positions independently, then reconcile round by round until they agree or the crux is clear. Needs the throng MCP server.",
-      "source": "./",
-      "strict": false,
-      "skills": [
-        "./skills/consensus"
       ]
     }
   ]

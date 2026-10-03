@@ -19,7 +19,7 @@ coder = lambda s: 'other' if s.inputs.coder == 'other' else 'main'
 
 rb.start('preflight')
 
-# An excerpt. The whole runbook: https://github.com/Nodge/skills/tree/main/examples/runbook-task-cycle
+# An excerpt. The whole runbook: https://github.com/agent-runbooks/skills/tree/main/skills/runbook-task-cycle
 
 rb.step('preflight', executor='light', prompt='prompts/00-preflight.md', inputs=['package'],
         reads=['working tree'], writes=['preflight.md'], reply={'clean': bool},

@@ -15,11 +15,11 @@ Write one when the procedure has three or more steps, will be repeated, and invo
 
 ## What the orchestrator sees
 
-Design for a reader that reads the runbook's `SKILL.md` and what `flow.py` prints, and copies each step's JSON reply into `flow.py`. It opens no other file and runs no other command, except the status of the run when the [runbook-viewer](https://github.com/Nodge/skills/tree/main/skills/runbook-viewer) skill is installed. Transitions are computed by `flow.py` from the replies, never reasoned about. So anything you want checked lives in a prompt, or in a following step that runs the command and reports a field. Anything the next step needs to know lives in a file the next step's prompt names. The shape of a report is taken on the executor's word. Facts about the code and the outcome of commands are checked by a step.
+Design for a reader that reads the runbook's `SKILL.md` and what `flow.py` prints, and copies each step's JSON reply into `flow.py`. It opens no other file and runs no other command, except the status of the run when the [runbook-viewer](https://github.com/agent-runbooks/skills/tree/main/skills/runbook-viewer) skill is installed. Transitions are computed by `flow.py` from the replies, never reasoned about. So anything you want checked lives in a prompt, or in a following step that runs the command and reports a field. Anything the next step needs to know lives in a file the next step's prompt names. The shape of a report is taken on the executor's word. Facts about the code and the outcome of commands are checked by a step.
 
 ## Writing a runbook
 
-Work through these in order. The output is a skill directory shaped like [`references/template.md`](references/template.md). A complete one: [runbook-task-cycle](https://github.com/Nodge/skills/tree/main/skills/runbook-task-cycle).
+Work through these in order. The output is a skill directory shaped like [`references/template.md`](references/template.md). A complete one: [runbook-task-cycle](https://github.com/agent-runbooks/skills/tree/main/skills/runbook-task-cycle).
 
 1. **Inputs, slug, smoke input.** Name each input and where it comes from. Define the slug the run directory takes from the inputs. Pick a smoke input with a predictable path through the flow. It is the first thing you run.
 2. **Flow first.** Write `flow.py` with the API in [`references/flow-language.md`](references/flow-language.md): a `step` per step with its `next` on the reply's fields, what launches together, what joins with `after`, where a loop points up and what its budget is, which branches `end` the run and with what status. `flow.py` is the only place steps and transitions live. Write it before the prompts.

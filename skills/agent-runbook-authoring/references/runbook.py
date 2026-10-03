@@ -14,7 +14,7 @@ The orchestrator then talks to flow.py:
 
 A JSON argument may be `-` to read it from stdin, for text with quotes in it.
 
-Source: https://github.com/Nodge/skills/tree/main/skills/agent-runbook-authoring
+Source: https://github.com/agent-runbooks/skills/tree/main/skills/agent-runbook-authoring
 Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the flow.py API: CHANGELOG.md there.
 """
 from __future__ import annotations

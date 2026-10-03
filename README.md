@@ -1,6 +1,6 @@
-# Skills
+# Agent Runbooks
 
-[![skills.sh](https://skills.sh/b/nodge/skills)](https://skills.sh/nodge/skills/agent-runbook-authoring)
+[![skills.sh](https://skills.sh/b/agent-runbooks/skills)](https://skills.sh/agent-runbooks/skills/agent-runbook-authoring)
 
 Agent skills I use in my daily work, in the [Agent Skills](https://agentskills.io) format: a directory with a `SKILL.md`. They work in Claude Code, Codex CLI, opencode and any other harness that loads skills.
 
@@ -12,21 +12,19 @@ Two ways in. The **Claude Code plugin** installs the skills as a managed bundle 
 <summary><strong>Claude Code plugin</strong></summary>
 
 ```bash
-claude plugin marketplace add Nodge/skills
-claude plugin install agent-runbook-authoring@nodge-skills
-claude plugin install runbook-task-cycle@nodge-skills
-claude plugin install runbook-viewer@nodge-skills
-claude plugin install consensus@nodge-skills
+claude plugin marketplace add agent-runbooks/skills
+claude plugin install agent-runbook-authoring@agent-runbooks
+claude plugin install runbook-task-cycle@agent-runbooks
+claude plugin install runbook-viewer@agent-runbooks
 ```
 
 Or from inside a session:
 
 ```
-/plugin marketplace add Nodge/skills
-/plugin install agent-runbook-authoring@nodge-skills
-/plugin install runbook-task-cycle@nodge-skills
-/plugin install runbook-viewer@nodge-skills
-/plugin install consensus@nodge-skills
+/plugin marketplace add agent-runbooks/skills
+/plugin install agent-runbook-authoring@agent-runbooks
+/plugin install runbook-task-cycle@agent-runbooks
+/plugin install runbook-viewer@agent-runbooks
 ```
 
 </details>
@@ -35,13 +33,13 @@ Or from inside a session:
 <summary><strong>skills CLI: Claude Code, Codex, opencode, Cursor and others</strong></summary>
 
 ```bash
-npx skills add Nodge/skills
+npx skills add agent-runbooks/skills
 ```
 
 It asks which skills to take and which agents to install them on. Non-interactive, into the user directory of one agent:
 
 ```bash
-npx skills add Nodge/skills --skill agent-runbook-authoring -g -a claude-code -y
+npx skills add agent-runbooks/skills --skill agent-runbook-authoring -g -a claude-code -y
 ```
 
 `npx skills update` pulls my changes later.
@@ -70,10 +68,6 @@ One coding task end to end: a coder implements the brief, a cheap model runs the
 ### ◆ runbook-viewer
 
 Shows where a runbook run is and what its steps wrote. After every step the orchestrator prints a text status into the chat, one line per step with its executor, time and reply. On request it starts a read-only page on localhost: the steps on the left, the selected step's log and output files on the right, following the run as it goes. Standard library Python, nothing to install. [Read more](skills/runbook-viewer).
-
-### ◆ consensus
-
-Think a question through with a second model: `/consensus codex/gpt-6-sol <question>`. The session you are in and the model you named answer **independently**, then reconcile round by round under one set of rules: reply to every open point with what convinced you or what you checked, concede only when refuted, stop at two CONVERGED in a row. The report is what both stand behind, what was contested, and what stayed open. Needs [throng](https://github.com/Nodge/throng-mcp). [Read more](skills/consensus).
 
 ## License
 
