@@ -1,0 +1,1 @@
+Add an optional `transliterate` flag to `slugify`. With it, letters outside ASCII are transliterated (`Привет` becomes `privet`, `Straße` becomes `strasse`) instead of being dropped. Without it, `slugify` behaves as before.

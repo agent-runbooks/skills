@@ -1,0 +1,124 @@
+{
+  "runbook": "runbook-task-cycle",
+  "status": "running",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo",
+    "profile": "profile.md",
+    "checks": "python3 -m unittest",
+    "task": "",
+    "scope": "textkit",
+    "maxFixRounds": 2,
+    "top": "claude/fable:high",
+    "strong": "claude/opus:high",
+    "light": "claude/sonnet:low",
+    "second": "codex/gpt-6.1-sol:high"
+  },
+  "sections": [
+    {
+      "id": "preflight",
+      "name": "preflight",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "clean": true
+      },
+      "note": null,
+      "answer": null,
+      "executor": "light",
+      "started_at": "2026-10-03T21:16:00Z",
+      "ended_at": "2026-10-03T21:16:39Z"
+    },
+    {
+      "id": "implement",
+      "name": "implement",
+      "status": "done",
+      "reply": {
+        "status": "done"
+      },
+      "note": null,
+      "answer": null,
+      "executor": "strong",
+      "started_at": "2026-10-03T21:16:42Z",
+      "ended_at": "2026-10-03T21:22:54Z"
+    },
+    {
+      "id": "checks",
+      "name": "checks",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "passed": false
+      },
+      "note": null,
+      "answer": null,
+      "executor": "light",
+      "started_at": "2026-10-03T21:23:00Z",
+      "ended_at": "2026-10-03T21:23:42Z"
+    },
+    {
+      "id": "fix-checks",
+      "name": "fix-checks",
+      "status": "failed",
+      "reply": null,
+      "note": "interrupted",
+      "answer": null,
+      "executor": "strong",
+      "started_at": "2026-10-03T21:23:49Z",
+      "ended_at": "2026-10-03T21:23:57Z"
+    },
+    {
+      "id": "fix-checks-2",
+      "name": "fix-checks",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "fixed": true
+      },
+      "note": null,
+      "answer": null,
+      "executor": "strong",
+      "started_at": "2026-10-03T21:24:36Z",
+      "ended_at": "2026-10-03T21:26:49Z"
+    },
+    {
+      "id": "checks-2",
+      "name": "checks",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "passed": true
+      },
+      "note": null,
+      "answer": null,
+      "executor": "light",
+      "started_at": "2026-10-03T21:26:54Z",
+      "ended_at": "2026-10-03T21:27:30Z"
+    },
+    {
+      "id": "review-a",
+      "name": "review-a",
+      "status": "running",
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "executor": "strong",
+      "started_at": "2026-10-03T21:27:36Z",
+      "ended_at": null
+    },
+    {
+      "id": "review-b",
+      "name": "review-b",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "findings": 2
+      },
+      "note": null,
+      "answer": null,
+      "executor": "second",
+      "started_at": "2026-10-03T21:27:36Z",
+      "ended_at": "2026-10-03T21:30:25Z"
+    }
+  ]
+}
