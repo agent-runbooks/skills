@@ -23,7 +23,7 @@ A finished runbook is self-sufficient: it runs where this skill is not installed
 
 The nearest relatives are [Claude Code workflows](https://code.claude.com/docs/en/workflows), a JavaScript script that fans out Claude subagents, and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph), [Mastra](https://mastra.ai) or the [OpenAI Agents SDK](https://github.com/openai/openai-agents-python), where the procedure is an application you write and run. All of them fix the branching the way `flow.py` does. A runbook differs in what sits around the branching.
 
-**Executors are harnesses, not API calls.** A code orchestrator can call any model, but it calls it bare: a chat completion through an SDK and an API key, with whatever tools you wrote for it. A runbook step runs in a coding harness, Claude Code, Codex or OpenCode, with its tools, skills, MCP servers and project instructions, on the subscription you already pay for. And the harnesses mix: an executor is a description, "a model from another vendor, through the tool that launches it", so the same runbook runs a Codex coder under a Claude orchestrator, or a Claude reviewer under Codex. A Claude Code workflow gives you the harness too, but only Claude subagents inside Claude Code. The runbook itself adds no harness to the mix: the orchestrating session must be able to launch the ones the executors name, through its own subagent tool or through an MCP server such as [throng](https://github.com/Nodge/throng-mcp).
+**Executors are harnesses, not API calls.** A code orchestrator can call any model, but it calls it bare: a chat completion through an SDK and an API key, with whatever tools you wrote for it. A runbook step runs in a coding harness, Claude Code, Codex or OpenCode, with its tools, skills, MCP servers and project instructions, on the subscription you already pay for. And the harnesses mix: an executor is a description, "a model from another vendor, through the tool that launches it", so the same runbook runs a Codex coder under a Claude orchestrator, or a Claude reviewer under Codex. A Claude Code workflow gives you the harness too, but only Claude subagents inside Claude Code. The runbook itself adds no harness to the mix: the orchestrating session must be able to launch the ones the executors name, through its own subagent tool or through an MCP server such as [throng](https://github.com/agent-runbooks/throng-mcp).
 
 **Installation is a copy.** A runbook is a skill directory plus one Python file, and Python 3.10 is the whole dependency. Install it like any skill, in any harness that loads them. Workflows exist only inside Claude Code. A code orchestrator needs a runtime, packages, credentials and a place to run, and the harness you work in is not that place.
 
@@ -46,7 +46,7 @@ What this costs. The flow branches on a few typed fields of a reply, loops withi
 
 ## Mixing models
 
-Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP server that runs Claude Code, Codex or OpenCode as subagents of each other. Any step of a runbook can go to any harness and model: a Codex coder, an OpenCode model as a cheap checker, a reviewer from another vendor that catches what the first one missed. [`runbook-task-cycle`](../runbook-task-cycle) runs every step that way, with the agent of each executor as an input of the run.
+Runbooks pair well with [throng](https://github.com/agent-runbooks/throng-mcp), an MCP server that runs Claude Code, Codex or OpenCode as subagents of each other. Any step of a runbook can go to any harness and model: a Codex coder, an OpenCode model as a cheap checker, a reviewer from another vendor that catches what the first one missed. [`runbook-task-cycle`](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle) runs every step that way, with the agent of each executor as an input of the run.
 
 ## Limits
 
@@ -62,4 +62,5 @@ Runbooks pair well with [throng](https://github.com/Nodge/throng-mcp), an MCP se
 - [`references/flow-language.md`](references/flow-language.md): the `flow.py` API
 - [`references/review-checklist.md`](references/review-checklist.md): cold read, checklist, run review
 - [`references/runbook.py`](references/runbook.py): the engine, Python 3.10+, no dependencies
+- [`references/runbook-review-loop`](references/runbook-review-loop): a complete sample runbook, implement and review in a loop with a human step, on the harness's own subagents
 - [`CHANGELOG.md`](CHANGELOG.md): engine versions

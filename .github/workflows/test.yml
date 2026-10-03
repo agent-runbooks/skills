@@ -20,3 +20,8 @@ jobs:
         working-directory: skills/agent-runbook-authoring/references
       - run: python -m unittest test_view -v
         working-directory: skills/runbook-viewer
+      - if: matrix.python == '3.13'
+        run: |
+          cmp ../runbook.py runbook.py
+          python flow.py --check
+        working-directory: skills/agent-runbook-authoring/references/runbook-review-loop

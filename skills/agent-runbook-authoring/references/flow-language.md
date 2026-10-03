@@ -4,46 +4,41 @@
 
 ```python
 #!/usr/bin/env python3
-"""Steps and transitions of runbook-<name>. Run with --help for the commands."""
-from runbook import Runbook, end, parallel
+"""Steps and transitions of runbook-review-loop. Run with --help for the commands."""
+from runbook import Runbook, end
 
 rb = Runbook()
 
-rb.inputs(ticket=str, brief=str, repo=str, package=str, coder='main', maxFixRounds=2)
+rb.inputs(brief=str, repo=str, checks='', maxFixRounds=2)
 
-rb.executor('main', 'the model of the main session, through the subagent tool, high effort where it has one')
-rb.executor('light', 'the cheapest fast model, through the subagent tool, low effort')
-rb.executor('other', 'a model from another vendor, through the tool that launches it, working directory = repo')
+# Two names for one kind of launch, so either role moves to another model by editing one line.
+SUBAGENT = ('a new general-purpose subagent through your own subagent tool (the Agent tool in Claude Code), '
+            'on the model of the main session, named explicitly where the tool takes a model')
+rb.executor('coder', SUBAGENT)
+rb.executor('reviewer', SUBAGENT)
 
-coder = lambda s: 'other' if s.inputs.coder == 'other' else 'main'
+rb.start('implement')
 
-rb.start('preflight')
+# The whole runbook, prompts included: runbook-review-loop/ next to this file.
 
-# An excerpt. The whole runbook: https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle
+rb.step('implement', executor='coder', prompt='prompts/01-implement.md', inputs=['checks'],
+        reads=['brief.md', 'working tree'], writes=['implement.md'],
+        next='review')
 
-rb.step('preflight', executor='light', prompt='prompts/00-preflight.md', inputs=['package'],
-        reads=['working tree'], writes=['preflight.md'], reply={'clean': bool},
-        next=lambda r, s: 'implement' if r.clean else 'ask-dirty')
+rb.step('review', executor='reviewer', prompt='prompts/02-review.md', inputs=['checks'],
+        reads=['brief.md', 'implement.md', 'fix.md', 'review.md', 'working tree'], writes=['review.md'],
+        reply={'findings': int},
+        next=lambda r, s: end('ready', 'read <run>/review.md') if r.findings == 0
+        else ('fix' if s.done('fix') < s.inputs.maxFixRounds else 'ask-rounds'))
 
-rb.step('checks', executor='light', prompt='prompts/02-checks.md', inputs=['package'],
-        writes=['checks.md'], reply={'passed': bool},
-        next=lambda r, s: parallel('review-a', 'review-b') if r.passed
-        else ('fix-checks' if not s.done('fix-checks') else end('failed', 'read <run>/checks.md')))
-
-for letter in 'ab':
-    rb.step(f'review-{letter}', executor='main', prompt='prompts/04-review.md',
-            inputs=[('id-prefix', letter)],
-            writes=[f'review-{letter}.md'], reply={'findings': int},
-            next='triage')
-
-rb.step('triage', executor='main', prompt='prompts/05-triage.md', after=('review-a', 'review-b'),
-        reads=['review-a.md', 'review-b.md'], writes=['triage.md'], reply={'to_fix': int},
-        skip=lambda s: 'polish' if all(s.reply(f'review-{x}').findings == 0 for x in 'ab') else None,
-        next=lambda r, s: 'polish' if r.to_fix == 0 else 'fix')
+rb.step('fix', executor='coder', prompt='prompts/03-fix.md', inputs=['checks'],
+        reads=['brief.md', 'review.md', 'rounds.md', 'working tree'], writes=['fix.md'],
+        next='review')
 
 rb.human('ask-rounds', writes='rounds.md', choices=['one more round', 'stop'],
-         question='Fix rounds are spent, see `<run>/verify.md`. One more round, or stop here?',
-         next=lambda choice, s: 'fix' if choice == 'one more round' else end('needs_attention', 'read <run>/verify.md'))
+         question='Fix rounds are spent and `<run>/review.md` still lists findings. '
+                  'One more round, or stop here? Anything you add goes to the coder for that round.',
+         next=lambda choice, s: 'fix' if choice == 'one more round' else end('needs_attention', 'read <run>/review.md'))
 
 if __name__ == '__main__':
     raise SystemExit(rb.main())
@@ -109,9 +104,9 @@ A question to the human. No executor. `flow.py` prints the question with `<run>`
 `python3 flow.py --check` from the runbook directory: a start step is set and declared, `repo` is an input, every executor name and every `inputs` name is declared, every prompt file exists, every `after` and every literal target is declared, `skip` is a function, every human step has a question, `prompts/common.md` exists. Conditions are Python; a wrong field name fails at run time with the reply that caused it, so walk the Flow by hand before the first run:
 
 ```
-python3 flow.py /tmp/try start '{"ticket": "T", "brief": "b", "repo": "/tmp/x", "package": "p"}'
-python3 flow.py /tmp/try reply preflight '{"status": "done", "clean": true}'
+python3 flow.py /tmp/try start '{"brief": "brief.md", "repo": "/tmp/x"}'
 python3 flow.py /tmp/try reply implement '{"status": "done"}'
+python3 flow.py /tmp/try reply review '{"status": "done", "findings": 2}'
 ```
 
 Feed it every branch: a red check, a failed reply, a human answer, the loop budget running out.
