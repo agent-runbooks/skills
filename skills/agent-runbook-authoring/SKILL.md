@@ -19,7 +19,7 @@ Design for a reader that reads the runbook's `SKILL.md` and what `flow.py` print
 
 ## Writing a runbook
 
-Work through these in order. The output is a skill directory shaped like [`references/template.md`](references/template.md). A complete one: [runbook-task-cycle](https://github.com/agent-runbooks/skills/tree/main/skills/runbook-task-cycle).
+Work through these in order. The output is a skill directory shaped like [`references/template.md`](references/template.md). A complete one: [runbook-task-cycle](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle).
 
 1. **Inputs, slug, smoke input.** Name each input and where it comes from. Define the slug the run directory takes from the inputs. Pick a smoke input with a predictable path through the flow. It is the first thing you run.
 2. **Flow first.** Write `flow.py` with the API in [`references/flow-language.md`](references/flow-language.md): a `step` per step with its `next` on the reply's fields, what launches together, what joins with `after`, where a loop points up and what its budget is, which branches `end` the run and with what status. `flow.py` is the only place steps and transitions live. Write it before the prompts.

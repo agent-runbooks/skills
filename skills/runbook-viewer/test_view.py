@@ -14,7 +14,7 @@ from typing import Any
 
 import view
 
-EXAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'examples', 'runs',
+EXAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tests', 'fixtures',
                        '20261002-slugify-max-length')
 NOW = datetime(2026, 10, 3, 14, 30, 0, tzinfo=timezone.utc)
 

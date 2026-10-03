@@ -20,8 +20,3 @@ jobs:
         working-directory: skills/agent-runbook-authoring/references
       - run: python -m unittest test_view -v
         working-directory: skills/runbook-viewer
-      - name: The task cycle runbook is consistent and carries the current engine
-        if: matrix.python == '3.13'
-        run: |
-          cmp skills/agent-runbook-authoring/references/runbook.py skills/runbook-task-cycle/runbook.py
-          cd skills/runbook-task-cycle && python flow.py --check

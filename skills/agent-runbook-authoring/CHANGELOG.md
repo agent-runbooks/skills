@@ -2,6 +2,10 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.1.1
+
+- The source link in the docstring points to `agent-runbooks/skills`, where the engine now lives. No change in behavior.
+
 ## 1.1.0
 
 - A section in `state.json` records `executor`, the executor name it was launched with (`null` for a human step), `started_at` and `ended_at`, UTC as `2026-10-03T14:05:12Z`. A `state.json` from 1.0.0 loads and resumes; its sections read the three fields as `null`. No change to `flow.py` or `progress.md`.
