@@ -33,5 +33,5 @@ The second prints a `http://127.0.0.1:<port>/` URL and serves until Ctrl-C; `--p
 
 - [`SKILL.md`](SKILL.md): when the orchestrator prints the status, how the page is started
 - `view.py`: the text status and the server; `test_view.py` its tests, `python3 -m unittest test_view`
-- `page.html`: the page, plain HTML, CSS and JavaScript
+- `page.html`, `page.js`: the page, plain HTML, CSS and JavaScript; the server sends a Content-Security-Policy that keeps it off other origins and answers only to a `127.0.0.1` or `localhost` Host
 - `marked.umd.js`: [marked](https://github.com/markedjs/marked) 18.0.14, the markdown renderer, vendored as published, MIT licence in [`marked-LICENSE.md`](marked-LICENSE.md)

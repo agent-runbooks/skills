@@ -169,9 +169,10 @@ class ServerTest(RunDirTestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def get(self, path: str) -> tuple[int, str, bytes]:
+    def get(self, path: str, headers: dict[str, str] | None = None) -> tuple[int, str, bytes]:
+        request = urllib.request.Request(self.server.url.rstrip('/') + path, headers=headers or {})
         try:
-            with urllib.request.urlopen(self.server.url.rstrip('/') + path) as res:
+            with urllib.request.urlopen(request) as res:
                 return res.status, res.headers['Content-Type'], res.read()
         except urllib.error.HTTPError as e:
             with e:
@@ -182,6 +183,7 @@ class ServerTest(RunDirTestCase):
         self.assertEqual((status, content_type), (200, 'text/html; charset=utf-8'))
         self.assertIn(b'marked.umd.js', body)
         self.assertEqual(self.get('/marked.umd.js')[0], 200)
+        self.assertEqual(self.get('/page.js')[0], 200)
         status, _, body = self.get('/api/state')
         self.assertEqual(status, 200)
         snap = json.loads(body)
@@ -191,6 +193,20 @@ class ServerTest(RunDirTestCase):
         self.assertEqual(self.get('/nope')[0], 404)
         self.write('state.json', '{"runbook": ')
         self.assertEqual(self.get('/api/state')[0], 503)
+
+    def test_page_runs_under_its_csp(self) -> None:
+        with urllib.request.urlopen(self.server.url) as res:
+            csp = res.headers['Content-Security-Policy']
+            body = res.read()
+        self.assertIn("script-src 'self';", csp)
+        self.assertNotIn(b'<script>', body)
+
+    def test_foreign_host_is_refused(self) -> None:
+        port = self.server.server_address[1]
+        self.assertEqual(self.get('/', {'Host': f'localhost:{port}'})[0], 200)
+        for host in (f'evil.example:{port}', '127.0.0.1', f'127.0.0.1:{port + 1}'):
+            with self.subTest(host=host):
+                self.assertEqual(self.get('/api/state', {'Host': host})[0], 403)
 
 
 if __name__ == '__main__':

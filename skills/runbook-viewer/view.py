@@ -28,7 +28,12 @@ MARKS = {'done': '✓', 'running': '●', 'waiting_for_human': '?', 'failed': '�
 OPEN = ('running', 'waiting_for_human')
 WAITING = 'waiting for the human'
 STATIC = {'/': ('page.html', 'text/html; charset=utf-8'),
-          '/marked.umd.js': ('marked.umd.js', 'text/javascript; charset=utf-8')}
+          '/marked.umd.js': ('marked.umd.js', 'text/javascript; charset=utf-8'),
+          '/page.js': ('page.js', 'text/javascript; charset=utf-8')}
+# Step outputs are written by agents that may have read untrusted text: no remote images to leak data through,
+# no javascript: links, nothing loaded from or sent to other origins.
+CSP = ("default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; "
+       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
 class RunError(Exception):
@@ -201,7 +206,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         url = urlsplit(self.path)
-        if url.path in STATIC:
+        port = self.server.server_address[1]
+        # A foreign Host is a page on another site that rebound its domain to 127.0.0.1 to read the run.
+        if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
+            self.send(HTTPStatus.FORBIDDEN, b'forbidden', 'text/plain; charset=utf-8')
+        elif url.path in STATIC:
             name, content_type = STATIC[url.path]
             with open(os.path.join(HERE, name), 'rb') as f:
                 self.send(HTTPStatus.OK, f.read(), content_type)
@@ -228,6 +237,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Security-Policy', CSP)
         self.end_headers()
         self.wfile.write(body)
 
