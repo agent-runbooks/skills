@@ -2,13 +2,75 @@
 
 [![skills.sh](https://skills.sh/b/agent-runbooks/skills)](https://skills.sh/agent-runbooks/skills/agent-runbook-authoring)
 
-Agent skills I use in my daily work, in the [Agent Skills](https://agentskills.io) format: a directory with a `SKILL.md`. They work in Claude Code, Codex CLI, opencode and any other harness that loads skills.
+A **runbook** lets you give an agent session a procedure to run step by step through subagents. It is an ordinary [Agent Skill](https://agentskills.io) with prompts and a flow you can read and edit. Code determines what comes next, while the session handles how to carry out each step.
+
+## How it works
+
+The steps are prompt files. The transitions live in `flow.py`, a few dozen lines of Python on a small engine copied into every runbook, so a finished runbook runs where nothing from this repository is installed. The orchestrating session launches what `flow.py` prints, waits, and hands each executor's JSON reply back to it; it never reasons about what comes next. Steps pass work to each other through files in a run directory, so the orchestrator's context stays small, and an interrupted run resumes from `state.json`.
+
+One step of a flow, with its branches next to it:
+
+```python
+rb.step(
+    'implement',
+    executor='coder',
+    prompt='prompts/01-implement.md',
+    writes=['implement.md'],
+    reply={'checks_passed': bool},
+    next=lambda r, s: (
+        parallel('review-a', 'review-b') if r.checks_passed
+        else 'fix' if s.done('fix') < s.inputs.maxFixRounds
+        else end('failed', 'read <run>/implement.md')
+    ),
+)
+```
+
+A step names its executor by description, such as "the cheapest fast model" or "a model from another vendor". The orchestrating session maps it onto what it can launch: its own subagents, or, with [throng-mcp](https://github.com/agent-runbooks/throng-mcp), Claude Code, Codex or OpenCode, so one run can mix vendors.
+
+For example, here is a run of [runbook-task-cycle](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle) halfway through, as runbook-viewer prints it into the chat after every step:
+
+```
+20261003-add-version-constant · runbook-task-cycle · running
+✓ preflight     sonnet       0:42  clean: true
+✓ implement     opus         5:20
+✓ checks        sonnet       0:43  passed: false
+✗ fix-checks    opus         0:10  interrupted
+✓ fix-checks-2  opus         2:13  fixed: true
+✓ checks-2      sonnet       0:38  passed: true
+● review-a      opus         4:05
+✓ review-b      gpt-6.1-sol  2:45  findings: 0
+```
+
+Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):
+
+| | Runbook | Claude Code workflow | Copilot dynamic workflow | Code orchestrator |
+|---|---|---|---|---|
+| Branching | computed by `flow.py` | computed by the script | computed by the script | computed by the code, or handed to a model |
+| Executors | coding harnesses, any vendor, mixed | Claude subagents | Copilot subagents | models through SDKs, coding harnesses through adapters |
+| Install | install the skill | a script in `.claude/workflows/` or a plugin | a Copilot extension or plugin | an application to build and deploy |
+| Runs in | any harness that loads skills and launches subagents, its own or through throng-mcp | Claude Code: CLI, Desktop, IDE, `claude -p`, Agent SDK | Copilot CLI, the Copilot app, the Copilot SDK | wherever you deploy it |
+| Reading | prompt files and a step list | JavaScript | JavaScript | an application |
+| How a step is done | the orchestrator's call | the script's | the script's | the code's |
+| Talking to the human | a question in the session, any time | none mid-run; pause or stop from `/workflows` | checkpoints and questions the script declares | an interrupt in code; a UI from the framework or yours |
+| Resume | in any session, from `state.json` | in the same session | from the steps the script journaled | from a checkpointer or storage you configure |
+
+The reasoning behind each row, and where a script fits better, is in [`docs/comparison.md`](docs/comparison.md).
+
+## What is here
+
+| You want to | Go to | You get |
+|---|---|---|
+| write a runbook for your own procedure | [agent-runbook-authoring](skills/agent-runbook-authoring) | a self-contained runbook that runs where this skill is not installed |
+| watch a run | [runbook-viewer](skills/runbook-viewer) | the status above in the chat after every step, and a read-only page on localhost with each step's log and output files |
+| run a ready-made runbook | [agent-runbooks/gallery](https://github.com/agent-runbooks/gallery) | runbooks to install and adapt |
+
+The two skills here stand apart: a runbook needs neither to run, and prints the status by itself when the viewer is installed.
 
 ## Install
 
 You need Python 3.10 or newer, and a harness whose session can launch subagents and learn when they finish.
 
-Two ways in. The **Claude Code plugin** installs both skills as one managed bundle that updates when I push. The **[skills CLI](https://github.com/vercel-labs/skills)** copies the skill files into your project or home directory, for any agent, as files you own and can edit. Pick one, otherwise each skill shows up twice.
+Two ways in. The **Claude Code plugin** installs both skills as one managed bundle. The **[skills CLI](https://github.com/vercel-labs/skills)** copies the skill files into your project or home directory, for any agent, as files you own and can edit. Pick one, otherwise each skill shows up twice.
 
 <details>
 <summary><strong>Claude Code plugin</strong></summary>
@@ -40,7 +102,7 @@ It asks which skills to take and which agents to install them on. Non-interactiv
 npx skills add agent-runbooks/skills --skill agent-runbook-authoring -g -a claude-code -y
 ```
 
-`npx skills update` pulls my changes later.
+`npx skills update` pulls later changes.
 
 </details>
 
@@ -51,20 +113,17 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 
 </details>
 
-## Skills
+## Write your own
 
-### ◆ agent-runbook-authoring
+Ask the session for a runbook, and [agent-runbook-authoring](skills/agent-runbook-authoring) writes it with you: the prompts, `flow.py`, the execution rules, and a cold read by a fresh subagent that has not seen the skill. A complete sample to read first is [runbook-review-loop](skills/agent-runbook-authoring/references/runbook-review-loop): a coder and a reviewer in a loop with a human step, on the harness's own subagents, so a copy of it in a skills directory runs as it is.
 
-Writes **runbooks**: procedures an agent session runs through subagents. The steps are prompt files, the transitions are a few lines of Python on a small engine, and the orchestrator never reasons about what comes next. [Read more](skills/agent-runbook-authoring).
+To change the checks, the models or the project rules of a gallery runbook, you usually do not need a new one: runbook-task-cycle takes a [profile file](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle#the-profile) per project.
 
-### ◆ runbook-viewer
+## Compatibility and limits
 
-Shows where a runbook run is and what its steps wrote. After every step the orchestrator prints a text status into the chat, one line per step with its executor, time and reply. On request it starts a read-only page on localhost: the steps on the left, the selected step's log and output files on the right, following the run as it goes. Standard library Python, nothing to install. [Read more](skills/runbook-viewer).
-
-## Gallery
-
-Ready-made runbooks to install and adapt live in [agent-runbooks/gallery](https://github.com/agent-runbooks/gallery). The first one is [runbook-task-cycle](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle): one coding task from brief to reviewed changes.
+- The skills load in any harness that reads Agent Skills. Running a runbook takes more: the orchestrating session must launch subagents and learn when they finish.
+- The engine computes the transitions. Whether the orchestrator follows the execution rules is still up to the model; `progress.md` and the review checklist make a deviation visible, not impossible.
 
 ## License
 
-MIT
+[MIT](LICENSE)
