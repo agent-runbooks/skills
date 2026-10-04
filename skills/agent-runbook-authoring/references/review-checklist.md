@@ -16,7 +16,7 @@ Every guess and every alternative reading the subagent reports is a defect in th
 
 flow.py:
 
-- Every loop has a budget and a way out, a human step or an end status.
+- Every loop has a budget and a way out, a human step or an end status. A loop through `on_failure` counts `s.failed`, since `s.done` does not grow there.
 - Steps launched by one `parallel(...)` share no `writes` path. If one of them changes the working tree, it launches alone, and the step after them has `after`.
 - Every name in `reads` is an input file, the working tree, or written by a step that runs before it on every path through the flow. Otherwise the prompt says what to do when it is absent. Every name in `writes` is read by a later step or named in End of run. Every file a prompt names is in the step's `reads` or `writes`.
 - A step with side effects has `side_effects`, applies a file, and takes no judgement calls.

@@ -107,9 +107,9 @@ A step an executor runs. The name is its id: in `next`, in `after`, in `s.done`,
 - `executor`: a name declared with `rb.executor`, or a function `(s) -> name`.
 - `prompt`: the step's prompt file, relative to the runbook directory.
 - `inputs`: what the launch message carries beyond `repo`, `run` and the files. A string is the name of a run input, passed with its value. A `(key, value)` pair is passed as it is.
-- `reply`: the fields the executor's JSON carries beyond `status`, each with a type, `{'passed': bool}`, or with the field's JSON Schema, `{'findings': {'type': 'integer', 'description': '…'}}`. A type is shorthand for `{'type': …}`: `bool`, `int`, `float`, `str`, `list`, `dict`. From these the engine writes the reply's schema to `<run>/schemas/<step>.json`, and the launch message gives its path as `reply schema: <path>`: the executor reads it, and a harness that can hold a subagent to a schema is given it. The schema is one closed object with every property required, `status`, `reason` and the fields, each field allowing null next to its own values: the form such harnesses accept for scalar fields. A `list` or `dict` shorthand gives an open array or object, which a harness that enforces schemas refuses: give such a field its full schema, `items` and closed `properties` included, or better, put the content in a file. A field's schema stands alone, without `$ref`. Its description says which go with which status, and the engine drops the nulls before recording. `next` reads the fields as `r.field`. A `done` reply that lacks one of them or carries the wrong `type` is recorded as `failed`, `invalid reply: <what is wrong>`. The engine checks nothing else: `enum`, `minimum` and the rest bind only where the harness enforces the schema, so a `next` handles a value outside them. Keep to `type`, `enum` and `description` unless you know the harnesses the runbook runs in: some refuse a schema with `minimum` or `minLength` in it.
-- `next`: where to go on a `done` reply. A step name, `parallel(...)`, `end(...)`, or a function `(r, s)` returning one of those. `r` is the reply with its fields as attributes, `s` is the state: `s.done(name)` and `s.inputs.<name>`.
-- `on_failure`: the same, for `failed` and `blocked` replies. Without it they end the run as `failed`, and the human is pointed at `progress.md`.
+- `reply`: the fields the executor's JSON carries beyond `status`, each with a type, `{'passed': bool}`, or with the field's JSON Schema, `{'findings': {'type': 'integer', 'description': '…'}}`. A type is shorthand for `{'type': …}`: `bool`, `int`, `float`, `str`, `list`, `dict`. From these the engine writes the reply's schema to `<run>/schemas/<step>.json`, and the launch message gives its path as `reply schema: <path>`: the executor reads it, and a harness that can hold a subagent to a schema is given it. The schema is one closed object with every property required, `status`, `reason` and the fields, each field allowing null next to its own values: the form such harnesses accept for scalar fields. A `list` or `dict` shorthand gives an open array or object, which a harness that enforces schemas refuses: give such a field its full schema, `items` and closed `properties` included, or better, put the content in a file. A field's schema stands alone, without `$ref`. Its description says which go with which status, and the engine drops the nulls before recording. `next` reads the fields as `r.field`. A reply that is not one JSON object with a known `status`, or a `done` reply that lacks one of the fields or carries the wrong `type`, goes back to its executor once: `flow.py` prints a correction that the orchestrator sends into the executor's session, asking for the JSON only and not for the step's work again. A second such reply, or an executor that cannot be asked again, is recorded as `failed`, `invalid reply: <what is wrong>`, and goes to `on_failure`. The engine checks nothing else: `enum`, `minimum` and the rest bind only where the harness enforces the schema, so a `next` handles a value outside them. Keep to `type`, `enum` and `description` unless you know the harnesses the runbook runs in: some refuse a schema with `minimum` or `minLength` in it.
+- `next`: where to go on a `done` reply. A step name, `parallel(...)`, `end(...)`, or a function `(r, s)` returning one of those. `r` is the reply with its fields as attributes, `s` is the state: `s.done(name)`, `s.failed(name)` and `s.inputs.<name>`.
+- `on_failure`: the same, for `failed` and `blocked` replies. Without it they end the run as `failed`, and the human is pointed at `progress.md`. A loop through it takes its budget from `s.failed(name)`: `on_failure=lambda r, s: 'checks' if s.failed('checks') < 2 else end('failed', …)`.
 - `after`: step names whose latest sections must all be `done` before this one launches. Use it on the step that follows a `parallel(...)`. If one of them is not `done`, the run ends `failed`.
 - `side_effects`: what the step does outside the tree and `<run>`: `'commit'`, `'PR comment'`. Such a step is never relaunched by the orchestrator alone. On a reply that is not `done`, `flow.py` asks for the human's yes first.
 - `skip`: a function `(s) -> target or None`, called when the step is reached and its `after` is satisfied. A target means the step is not launched and the run goes there instead: triage has nothing to do when both reviews report `findings == 0`. Its file is then absent for the steps after it, and their prompts say what to do without it.
@@ -128,13 +128,15 @@ A question to the human. No executor. `flow.py` prints the question with `<run>`
 
 ## Targets
 
-- a step name: launch it. A step that already ran runs again as a new section (`fix-2`, `fix-3`) that writes new numbered files, and `s.done(name)` grows. That is a loop: give it a budget and a way out.
+- a step name: launch it. A step that already ran runs again as a new section (`fix-2`, `fix-3`) that writes new numbered files, and `s.done(name)` grows, or `s.failed(name)` when it ended `failed` or `blocked`. That is a loop: give it a budget and a way out.
 - `parallel('review-a', 'review-b')`: launch both. They write different files, and at most one changes the working tree. A step with `after` waits for a `done` section it has not joined on yet from each of those steps, so when a loop brings the flow back, it waits for the new round and never takes the round before for done. If the loop runs only some of them again, it takes the earlier section of the others once nothing else is running.
 - `end('status', 'read <run>/checks.md')`: the run ends. The second argument is what `flow.py` tells the orchestrator to report, with `<run>/checks.md` replaced by the latest numbered `checks.md` and any other `<run>` by the run directory. A human step's question gets the same replacement. Describe every status under End of run in `SKILL.md`, `failed` included.
 
-## `s.done(name)`, `s.reply(name)` and `s.replies(name)`
+## `s.done(name)`, `s.failed(name)`, `s.reply(name)` and `s.replies(name)`
 
 `s.done(name)` is how many sections of that step are `done` so far, the one whose reply is being routed included. `s.done('fix-checks')` is 0 before the step has run once. `s.done('verify') < s.inputs.maxFixRounds` is a loop budget.
+
+`s.failed(name)` is the same for sections that ended `failed` or `blocked`. An interrupted or relaunched section is not counted. A loop through `on_failure` never grows `s.done`, so its budget is `s.failed`.
 
 `s.reply(name)` is the reply of that step's latest section reached so far, with its fields as attributes, or `None` when the step has not finished a section yet. It lets a `skip` or a `next` look at what an earlier step reported: `s.reply('review-a').findings`. For a human step it holds `choice` and the step's `reply` fields.
 
@@ -144,7 +146,7 @@ Every input the run needs in a condition is passed at `start`, defaults included
 
 ## Files of a run
 
-- `state.json`: the sections with their statuses and replies. Written by `runbook.py` only.
+- `state.json`: the sections with their statuses and replies, and the replies that did not pass the check. Written by `runbook.py` only.
 - `progress.md`: the inputs and a text log, one line per launch, reply, question, answer and end. Append-only, for humans.
 - The steps' output files, `<NN>-<name>`, and the input files under their own names.
 - `schemas/<step>.json`: the JSON Schema of each launched step's reply. Written by `runbook.py` only.
@@ -159,4 +161,4 @@ python3 flow.py /tmp/try reply preflight '{"status": "done", "clean": true}'
 python3 flow.py /tmp/try reply implement '{"status": "done"}'
 ```
 
-Feed it every branch: a red check, a failed reply, a human answer, the loop budget running out.
+Feed it every branch: a red check, a failed reply, an invalid reply twice, a human answer, the loop budget running out.

@@ -2,6 +2,14 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.3.0
+
+No change is required in an existing `flow.py`. A runbook that takes this engine also takes the new Execution rules from `references/template.md`.
+
+- A reply that does not pass the check goes back to its executor once before the step fails: not one JSON object, no `status` or an unknown one, or a `done` reply without a declared field or with a wrong `type`. `reply` leaves the section running and prints a correction for the orchestrator to send into the executor's session: what was wrong, the path of the reply schema, and that the step's work is not redone. The answer goes to the same `reply` command. A second such reply is recorded as `failed`, `invalid reply: <what is wrong>`, and goes to `on_failure` as before. An orchestrator that cannot send a message to a finished subagent runs the `failed` reply `flow.py` prints for that case. The Execution rules say how, and that a missing JSON object is passed as `{}`.
+- A section in `state.json` records `invalid_replies`: each reply that did not pass the check, as passed, with what was wrong. Until 1.3.0 such a reply was replaced by the failure before it was recorded. A `state.json` from 1.2.0 loads and resumes. `progress.md` has a line for each.
+- `s.failed(step)`: how many sections of a step ended `failed` or `blocked`, interrupted and relaunched ones aside. A loop through `on_failure` back to the same step had no budget it could count: `s.done` grows only on `done`.
+
 ## 1.2.0
 
 No change is required in an existing `flow.py`. A runbook that takes this engine also takes the new Execution rules and Executor constraints from `references/template.md`, and drops the `## Reply schema` section from its prompts.

@@ -60,6 +60,7 @@ You are the orchestrator of this run. Orchestrating takes a session that can lau
 - run `python3 <skill>/flow.py …` as written below
 - save the input files the Inputs section names into the run directory `start` created
 - launch steps as subagents, with the message `flow.py` prints, and with the reply schema where your tool takes one
+- send an executor the correction `flow.py` prints for its reply
 - read a step's output file only to quote it to the human
 - ask the human, and report the end of the run
 - show the human the run's status, as the Status group below says
@@ -75,8 +76,9 @@ flow.py
 
 - It keeps the state of the run and prints what to do: which steps to launch, with which executor and what message, whom to wait for, what to ask the human, or that the run has ended. Do all of what it prints, then wait. Every command it asks you to run next is printed in full.
 - An executor is a named way to launch a step: a new subagent through your own subagent tool, with the model and settings its description gives, or through another tool when the description names one.
-- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{"status": "failed", "reason": "invalid reply"}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
+- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
 - The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
+- A reply did not pass the check: `flow.py` prints a correction. Send it to the subagent that ran the step, as a follow-up message in its session, not as a new launch, and wait for its answer the way you wait for a step. Its answer goes to the same `reply` command. If your tool cannot send a message to a subagent that has finished, run the command `flow.py` printed for that case instead. An executor that only relays another agent's reply passes the correction on to that agent, in its session, and returns its answer verbatim.
 - A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <section>`. Executors you launched in this conversation are not gone: wait for them.
 - You departed from these rules, or did something `flow.py` does not know about: `flow.py <run> log '<one line>'`.
 

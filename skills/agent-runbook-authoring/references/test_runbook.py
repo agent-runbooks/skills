@@ -70,6 +70,11 @@ class RunbookTestCase(unittest.TestCase):
     def reply(self, rb: Runbook, sid: str, **reply: object) -> str:
         return self.call(rb, 'reply', sid, json.dumps({'status': 'done', **reply}))
 
+    def reject(self, rb: Runbook, sid: str, raw: str) -> str:
+        """Passes an invalid reply, and again after the correction it asks for; returns the second output."""
+        self.assertTrue(self.first_line(self.call(rb, 'reply', sid, raw)).startswith(f'the reply of step `{sid}` did not'))
+        return self.call(rb, 'reply', sid, raw)
+
     def state(self) -> dict:
         with open(os.path.join(self.run_dir, 'state.json')) as f:
             return json.load(f)
@@ -137,7 +142,8 @@ class StartTest(RunbookTestCase):
         self.assertEqual(self.state(), {
             'runbook': 'runbook-test', 'status': 'running', 'inputs': {'repo': '/repo', 'rounds': 2},
             'sections': [{'id': 'first', 'name': 'first', 'status': 'running', 'reply': None, 'note': None,
-                          'answer': None, 'executor': 'light', 'started_at': '2026-10-03T10:00:00Z', 'ended_at': None}],
+                          'answer': None, 'executor': 'light', 'started_at': '2026-10-03T10:00:00Z', 'ended_at': None,
+                          'invalid_replies': []}],
         })
         self.assertEqual(self.progress(), (
             '# Run run\n\nRunbook `runbook-test`. State in `state.json`. Inputs:\n\n'
@@ -195,16 +201,20 @@ class RoutingTest(RunbookTestCase):
         self.start(rb)
         self.assertEqual(self.first_line(self.reply(rb, 'probe', clean=False)), 'launch step `dirty` as a new subagent, executor `main`: Main model')
 
-    def test_invalid_reply_fails_the_run(self) -> None:
+    def test_invalid_reply_twice_fails_the_run(self) -> None:
         rb = self.runbook(linear)
         base = self.run_dir
-        for i, raw in enumerate(('garbage', '{"status": "ok"}', '[1]')):
+        cases = (('garbage', 'not a JSON object'), ('[1]', 'not a JSON object'),
+                 ('{}', 'the message has no JSON object'), ('{"reason": "x"}', "no field 'status'"),
+                 ('{"status": "ok"}', 'field \'status\' must be one of done, failed, blocked, got "ok"'))
+        for i, (raw, problem) in enumerate(cases):
             with self.subTest(raw=raw):
                 self.run_dir = f'{base}-{i}'
                 self.start(rb)
-                out = self.call(rb, 'reply', 'first', raw)
-                self.assertIn('end: failed (step `first` failed: invalid reply)', out)
-                self.assertEqual(self.state()['sections'][0]['reply'], {'status': 'failed', 'reason': 'invalid reply'})
+                out = self.reject(rb, 'first', raw)
+                self.assertIn(f'end: failed (step `first` failed: invalid reply: {problem})', out)
+                self.assertEqual(self.state()['sections'][0]['reply'],
+                                 {'status': 'failed', 'reason': f'invalid reply: {problem}'})
 
     def test_done_reply_without_declared_field_fails_the_run(self) -> None:
         def declare(rb: Runbook) -> None:
@@ -220,7 +230,7 @@ class RoutingTest(RunbookTestCase):
             with self.subTest(fields=fields):
                 self.run_dir = f'{base}-{i}'
                 self.start(rb)
-                out = self.reply(rb, 'checks', **fields)
+                out = self.reject(rb, 'checks', json.dumps({'status': 'done', **fields}))
                 self.assertIn(f'end: failed (step `checks` failed: invalid reply: {problem})', out)
 
     def test_a_raising_next_keeps_the_reply_and_the_run_resumes(self) -> None:
@@ -445,7 +455,7 @@ class ParallelTest(RunbookTestCase):
         rb = self.runbook(declare)
         self.start(rb)
         self.reply(rb, 'fan')
-        out = self.call(rb, 'reply', 'right', 'garbage')
+        out = self.reject(rb, 'right', 'garbage')
         self.assertEqual(out.strip(), 'wait: `left`. The run ends failed once they are recorded.')
         self.assertEqual(self.state()['status'], 'running')
 
@@ -628,7 +638,7 @@ class ReplySchemaTest(RunbookTestCase):
                                                   {'type': 'null'}]}},
             'required': ['status', 'reason', 'passed', 'findings'], 'additionalProperties': False})
         out = self.reply(rb, 'review', passed=True, findings='none')
-        self.assertIn("invalid reply: field 'findings' must be integer, got \"none\"", out)
+        self.assertIn("did not pass the check (field 'findings' must be integer, got \"none\")", out)
 
     def test_nulls_of_the_schema_are_not_recorded(self) -> None:
         def declare(rb: Runbook) -> None:
@@ -639,7 +649,7 @@ class ReplySchemaTest(RunbookTestCase):
         self.start(rb)
         self.call(rb, 'reply', 'review', '{"status": "done", "reason": null, "findings": 2}')
         self.call(rb, 'reply', 'review-2', '{"status": "blocked", "reason": "no repo", "findings": null}')
-        self.call(rb, 'reply', 'review-3', '{"status": "done", "reason": null, "findings": null}')
+        self.reject(rb, 'review-3', '{"status": "done", "reason": null, "findings": null}')
         self.call(rb, 'reply', 'review-4', '{"status": "failed", "reason": null, "findings": null}')
         self.assertEqual([s['reply'] for s in self.state()['sections'][:4]], [
             {'status': 'done', 'findings': 2}, {'status': 'blocked', 'reason': 'no repo'},
@@ -664,7 +674,7 @@ class ReplySchemaTest(RunbookTestCase):
         self.start(rb)
         self.reply(rb, 'count', n=None, items=[1])
         out = self.reply(rb, 'count-2', n='two', items=[])
-        self.assertIn("invalid reply: field 'n' must be integer or null, got \"two\"", out)
+        self.assertIn("did not pass the check (field 'n' must be integer or null, got \"two\")", out)
         self.assertEqual(self.state()['sections'][0]['reply'], {'status': 'done', 'n': None, 'items': [1]})
 
     def test_only_the_type_of_a_field_is_checked(self) -> None:
@@ -759,6 +769,177 @@ class RelaunchTest(RunbookTestCase):
         self.assertEqual(self.state()['sections'][0]['note'], "relaunched on the human's yes")
 
 
+class CorrectionTest(RunbookTestCase):
+    """A reply that does not pass the check goes back to its executor once before the step is failed."""
+
+    def declare(self, rb: Runbook) -> None:
+        rb.start('checks')
+        rb.step('checks', executor='light', prompt='prompts/a.md', reply={'passed': bool},
+                next=lambda r, s: end('ready') if r.passed else end('red'), on_failure=end('broken'))
+
+    def test_asks_for_a_correction_and_takes_the_corrected_reply(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        out = self.call(rb, 'reply', 'checks', '{"status": "done", "passed": "yes"}')
+        problem = 'field \'passed\' must be boolean, got "yes"'
+        self.assertEqual(out.splitlines(), [
+            f'the reply of step `checks` did not pass the check ({problem}). Send this to the subagent that ran it, '
+            f'as a follow-up message in its session, not as a new launch:',
+            '--- message ---',
+            f'Your final message did not pass the check: {problem}. Do not redo the step and change nothing. '
+            f'Reply with one JSON object that fits {self.run_dir}/schemas/checks.json for the work already done, '
+            f'and nothing else. If the work is not done, reply failed with a one-line reason.',
+            '--- end of message ---',
+            f"when it answers: {self.cmd} {self.run_dir} reply checks '<the last JSON object of its message>'",
+            f'if your tool cannot send a message to a subagent that has finished: {self.cmd} {self.run_dir} reply checks '
+            f'\'{{"status": "failed", "reason": "invalid reply, and its executor could not be asked again"}}\'',
+            '',
+            'still running: `checks`',
+        ])
+        section = self.state()['sections'][0]
+        self.assertEqual((section['status'], section['reply'], section['ended_at']), ('running', None, None))
+        self.assertEqual(section['invalid_replies'],
+                         [{'reply': '{"status": "done", "passed": "yes"}', 'problem': problem}])
+        self.assertEqual(self.call(rb).strip(), 'still running: `checks`')
+        out = self.reply(rb, 'checks', passed=True)
+        self.assertTrue(out.startswith('end: ready (after step `checks`)'))
+        self.assertEqual(self.state()['sections'][0]['reply'], {'status': 'done', 'passed': True})
+        self.assertIn(f'- checks: invalid reply ({problem}): {{"status": "done", "passed": "yes"}}\n'
+                      f'- checks: its executor is asked to correct the reply\n'
+                      f'- checks: {{"status": "done", "passed": true}}\n', self.progress())
+
+    def test_a_second_invalid_reply_fails_the_step_and_keeps_both(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        out = self.reject(rb, 'checks', '{"status": "done"}')
+        self.assertTrue(out.startswith("end: broken (after step `checks`)"))
+        section = self.state()['sections'][0]
+        self.assertEqual(section['reply'], {'status': 'failed', 'reason': "invalid reply: no field 'passed'"})
+        self.assertEqual([r['reply'] for r in section['invalid_replies']], ['{"status": "done"}'] * 2)
+
+    def test_executor_that_cannot_be_asked_again(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'checks', '{}')
+        self.call(rb, 'reply', 'checks', '{"status": "failed", "reason": "invalid reply, and its executor could not be asked again"}')
+        self.assertEqual(self.state()['sections'][0]['reply']['reason'],
+                         'invalid reply, and its executor could not be asked again')
+
+    def test_the_correction_is_printed_once_while_a_parallel_branch_runs(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('fan')
+            rb.step('fan', executor='light', prompt='prompts/a.md', next=parallel('left', 'right'))
+            rb.step('left', executor='main', prompt='prompts/b.md', reply={'n': int}, next='join')
+            rb.step('right', executor='main', prompt='prompts/c.md', next='join')
+            rb.step('join', executor='main', prompt='prompts/d.md', after=('left', 'right'), next=end('ready'))
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.reply(rb, 'fan')
+        self.assertIn('the reply of step `left` did not pass the check', self.reply(rb, 'left'))
+        self.assertEqual(self.reply(rb, 'right').strip(), 'still running: `left`')
+        self.assertEqual(self.first_line(self.reply(rb, 'left', n=1)),
+                         'launch step `join` as a new subagent, executor `main`: Main model')
+
+    def test_an_ending_waits_for_a_branch_under_correction_in_either_order(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('fan')
+            rb.step('fan', executor='light', prompt='prompts/a.md', next=parallel('left', 'right'))
+            rb.step('left', executor='main', prompt='prompts/b.md', next=end('ready'))
+            rb.step('right', executor='main', prompt='prompts/c.md', reply={'n': int}, next=end('ready'))
+        rb = self.runbook(declare)
+        base = self.run_dir
+        wait = 'wait: `right`. The run ends ready once they are recorded.'
+        for i, ending_first in enumerate((False, True)):
+            with self.subTest(ending_first=ending_first):
+                self.run_dir = f'{base}-{i}'
+                self.start(rb)
+                self.reply(rb, 'fan')
+                if ending_first:
+                    self.assertEqual(self.reply(rb, 'left').strip(), wait)
+                out = self.reply(rb, 'right')
+                self.assertTrue(out.startswith('the reply of step `right` did not pass the check'))
+                if not ending_first:
+                    self.assertEqual(self.reply(rb, 'left').strip(), wait)
+                else:
+                    self.assertEqual(out.splitlines()[-1], wait)
+                self.assertTrue(self.reply(rb, 'right', n=1).startswith('end: ready'))
+
+    def test_a_side_effect_step_is_corrected_before_the_human_is_asked(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('commit')
+            rb.step('commit', executor='main', prompt='prompts/a.md', reply={'sha': str}, side_effects='commit',
+                    next=end('ready'))
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.assertIn('did not pass the check', self.first_line(self.reply(rb, 'commit')))
+        self.assertTrue(self.reply(rb, 'commit').startswith(
+            "ask the human: step `commit` has side effects and ended failed (invalid reply: no field 'sha')."))
+
+    def test_the_budget_survives_a_resume_and_a_new_section_gets_its_own(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'checks', 'garbage')
+        fresh = self.runbook(self.declare)
+        self.assertEqual(self.call(fresh).strip(), 'still running: `checks`')
+        self.call(fresh, 'interrupted', 'checks')
+        self.assertIn('did not pass the check', self.call(fresh, 'reply', 'checks-2', 'garbage'))
+
+
+class FailedCountTest(RunbookTestCase):
+    """s.failed(step) is the budget of a loop through on_failure, where no section is done."""
+
+    def declare(self, rb: Runbook) -> None:
+        rb.start('flaky')
+        rb.step('flaky', executor='light', prompt='prompts/a.md', next=end('ready'),
+                on_failure=lambda r, s: 'flaky' if s.failed('flaky') < 2 else end('failed', 'read <run>/progress.md'))
+
+    def test_on_failure_loop_ends_on_its_budget(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        out = self.call(rb, 'reply', 'flaky', '{"status": "failed", "reason": "network"}')
+        self.assertEqual(self.first_line(out), 'launch step `flaky-2` as a new subagent, executor `light`: Light model')
+        out = self.call(rb, 'reply', 'flaky-2', '{"status": "blocked", "reason": "network"}')
+        self.assertTrue(out.startswith('end: failed (after step `flaky-2`)'))
+
+    def test_interrupted_sections_are_not_counted(self) -> None:
+        rb = self.runbook(self.declare)
+        self.start(rb)
+        self.call(rb, 'interrupted', 'flaky')
+        out = self.call(rb, 'reply', 'flaky-2', '{"status": "failed", "reason": "network"}')
+        self.assertEqual(self.first_line(out), 'launch step `flaky-3` as a new subagent, executor `light`: Light model')
+
+    def test_the_executor_function_sees_it_and_a_relaunch_is_not_counted(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('push')
+            rb.step('push', executor=lambda s: 'light' if s.failed('push') else 'main', prompt='prompts/a.md',
+                    side_effects='push', next=end('ready'))
+            rb.step('retry', executor=lambda s: 'light' if s.failed('retry') else 'main', prompt='prompts/b.md',
+                    next=end('ready'), on_failure='retry')
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'push', '{"status": "failed", "reason": "x"}')
+        self.assertIn('executor `main`', self.first_line(self.call(rb, 'relaunch', 'push')))
+        self.run_dir += '-2'
+        rb.start('retry')
+        self.start(rb)
+        out = self.call(rb, 'reply', 'retry', '{"status": "failed", "reason": "x"}')
+        self.assertEqual(self.first_line(out), 'launch step `retry-2` as a new subagent, executor `light`: Light model')
+
+    def test_counts_per_step_and_none_before_a_failure(self) -> None:
+        seen: list[tuple[int, int]] = []
+
+        def declare(rb: Runbook) -> None:
+            rb.start('a')
+            rb.step('a', executor='light', prompt='prompts/a.md', next='b',
+                    on_failure=lambda r, s: seen.append((s.failed('a'), s.failed('b'))) or 'b')
+            rb.step('b', executor='light', prompt='prompts/b.md',
+                    next=lambda r, s: seen.append((s.failed('a'), s.failed('b'))) or end('ready'))
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'a', '{"status": "failed", "reason": "x"}')
+        self.reply(rb, 'b')
+        self.assertEqual(seen[-1], (1, 0))
+
 class TimingTest(RunbookTestCase):
     """Each section records its executor, when it was opened and when it left an open status."""
 
@@ -825,7 +1006,7 @@ class TimingTest(RunbookTestCase):
         with open(os.path.join(self.run_dir, 'state.json'), encoding='utf-8') as f:
             data = json.load(f)
         for section in data['sections']:
-            for name in ('executor', 'started_at', 'ended_at'):
+            for name in ('executor', 'started_at', 'ended_at', 'invalid_replies'):
                 del section[name]
         with open(os.path.join(self.run_dir, 'state.json'), 'w', encoding='utf-8') as f:
             json.dump(data, f)

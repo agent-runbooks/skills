@@ -20,7 +20,7 @@ Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the fl
 """
 from __future__ import annotations
 
-__version__ = '1.2.0'
+__version__ = '1.3.0'
 
 import json
 import os
@@ -142,19 +142,28 @@ def _writes(step: AnyStep) -> list[str]:
 
 
 class State:
-    """What a `next` or `skip` function may ask about the run: `s.inputs.<name>`, `s.done(step)`, `s.reply(step)`,
-    `s.replies(step)`."""
+    """What a `next` or `skip` function may ask about the run: `s.inputs.<name>`, `s.done(step)`, `s.failed(step)`,
+    `s.reply(step)`, `s.replies(step)`."""
 
     def __init__(self, inputs: dict[str, Any], done_count: dict[str, int],
-                 latest: dict[str, Section] | None = None, history: dict[str, list[Section]] | None = None) -> None:
+                 latest: dict[str, Section] | None = None, history: dict[str, list[Section]] | None = None,
+                 failed_count: dict[str, int] | None = None) -> None:
         self.inputs = SimpleNamespace(**inputs)
         self._done = done_count
+        self._failed = failed_count or {}
         self._latest = latest or {}
         self._history = history or {}
 
     def done(self, step: str) -> int:
         """How many sections of this step are done so far, the one just recorded included."""
         return self._done.get(step, 0)
+
+    def failed(self, step: str) -> int:
+        """How many sections of this step ended failed or blocked so far, the one just recorded included.
+
+        Interrupted and relaunched sections are not counted.
+        """
+        return self._failed.get(step, 0)
 
     def reply(self, step: str) -> SimpleNamespace | None:
         """The reply of this step's latest section reached so far, if that section is done."""
@@ -188,8 +197,9 @@ REPLY_STATUSES = (Status.DONE.value, Status.FAILED.value, Status.BLOCKED.value)
 NOTE_INTERRUPTED = 'interrupted'
 NOTE_RELAUNCHED = "relaunched on the human's yes"
 SUPERSEDED_NOTES = ('interrupted', 'relaunched')
-INVALID_REPLY = {'status': Status.FAILED.value, 'reason': 'invalid reply'}
 NO_REASON = 'no reason given'
+# How many times an executor is asked to correct a reply that did not pass the check before the step is failed.
+CORRECTIONS = 1
 
 
 def utc_now() -> str:
@@ -202,6 +212,7 @@ class Section:
     """One launch of a step: its id is the step's name, with a counter from the second launch on (fix, fix-2).
 
     executor, started_at and ended_at are None in a state.json written before 1.1.0; executor is None for a human step.
+    invalid_replies: what the orchestrator passed that did not pass the check, as {'reply': raw, 'problem': ...}.
     """
 
     id: str
@@ -213,6 +224,7 @@ class Section:
     executor: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    invalid_replies: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def superseded(self) -> bool:
@@ -239,13 +251,15 @@ class Section:
 
     def to_json(self) -> dict[str, Any]:
         return dict(id=self.id, name=self.name, status=self.status.value, reply=self.reply, note=self.note,
-                    answer=self.answer, executor=self.executor, started_at=self.started_at, ended_at=self.ended_at)
+                    answer=self.answer, executor=self.executor, started_at=self.started_at, ended_at=self.ended_at,
+                    invalid_replies=self.invalid_replies)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Section:
         return cls(id=data['id'], name=data['name'], status=Status(data['status']), reply=data['reply'],
                    note=data['note'], answer=data.get('answer'), executor=data.get('executor'),
-                   started_at=data.get('started_at'), ended_at=data.get('ended_at'))
+                   started_at=data.get('started_at'), ended_at=data.get('ended_at'),
+                   invalid_replies=data.get('invalid_replies') or [])
 
 
 @dataclass
@@ -370,6 +384,7 @@ class Plan:
     side_effect_failures: list[Section] = field(default_factory=list)
     ending: Ending | None = None
     done_count: dict[str, int] = field(default_factory=dict)
+    failed_count: dict[str, int] = field(default_factory=dict)
 
     @property
     def idle(self) -> bool:
@@ -444,10 +459,12 @@ class Replay:
             self._plan.done_count[name] = self._plan.done_count.get(name, 0) + 1
             self._history.setdefault(name, []).append(section)
             self._route(step, section)
-        elif isinstance(step, Step) and step.side_effects:
-            self._plan.side_effect_failures.append(section)
         else:
-            self._route(step, section)
+            self._plan.failed_count[name] = self._plan.failed_count.get(name, 0) + 1
+            if isinstance(step, Step) and step.side_effects:
+                self._plan.side_effect_failures.append(section)
+            else:
+                self._route(step, section)
 
     def _joined(self, step: AnyStep) -> bool:
         """Whether every `after` step has a done section this step has not joined on yet.
@@ -498,7 +515,7 @@ class Replay:
             self._visit(j)
 
     def _state_now(self) -> State:
-        return State(self._state.inputs, self._plan.done_count, self._latest, self._history)
+        return State(self._state.inputs, self._plan.done_count, self._latest, self._history, self._plan.failed_count)
 
     def _target(self, step: AnyStep, section: Section) -> Target:
         s = self._state_now()
@@ -534,6 +551,10 @@ TEXT = {
     'free_text': 'Free text',
     'side_effect_failure': 'ask the human: step `{label}` has side effects and ended {status}{reason}. '
                            'On yes: {relaunch}. On no: {log} and stop.',
+    'correct': 'the reply of step `{label}` did not pass the check ({problem}). Send this to the subagent that ran it, '
+               'as a follow-up message in its session, not as a new launch:',
+    'correct_then': 'when it answers: {command}',
+    'correct_cannot': 'if your tool cannot send a message to a subagent that has finished: {command}',
     'still_running': 'still running: {labels}',
     'idle': 'nothing is pending and the run has not ended. Report that to the human with the run directory, and stop.',
     'wait_for_end': 'wait: {labels}. The run ends {status} once they are recorded.',
@@ -542,6 +563,7 @@ TEXT = {
     'report': ', {report}',
     # placeholders inside the commands the orchestrator fills in
     'reply_arg': "'<the last JSON object of its message>'",
+    'uncorrectable_reply': '\'{"status": "failed", "reason": "invalid reply, and its executor could not be asked again"}\'',
     'answer_arg': "'<the choice>' '<their words verbatim, or - to read them from stdin>'",
     'answer_free_arg': "'<their words verbatim, or - to read them from stdin>'",
     'answer_json_arg': "'{{{keys}}}' '<their words verbatim, or - to read them from stdin>'",
@@ -559,6 +581,9 @@ TEXT = {
     'message_schema': 'reply schema: {path}',
     'absent': 'absent, no earlier step wrote it',
     'message_partial': 'The tree may hold a partial earlier attempt.',
+    'message_correct': 'Your final message did not pass the check: {problem}. Do not redo the step and change nothing. '
+                       'Reply with one JSON object that fits {schema} for the work already done, and nothing else. '
+                       'If the work is not done, reply failed with a one-line reason.',
     'message_close': '--- end of message ---',
     'missing_repo': '<repo: not among the inputs>',
     'missing_input': '<not among the inputs>',
@@ -584,6 +609,14 @@ class Renderer:
     def wait_for_end(self, ending: Ending, waiting: list[Section]) -> list[str]:
         labels = self._labels(waiting)
         return [TEXT['wait_for_end'].format(labels=labels, status=ending.end.status)]
+
+    def correction(self, section: Section, problem: str) -> list[str]:
+        """What the orchestrator sends the executor whose reply did not pass the check."""
+        body = TEXT['message_correct'].format(problem=problem, schema=self.files.schema_path(section.name))
+        return [TEXT['correct'].format(label=section.label(), problem=problem),
+                TEXT['message_open'], body, TEXT['message_close'],
+                TEXT['correct_then'].format(command=self._command('reply', section.id, TEXT['reply_arg'])),
+                TEXT['correct_cannot'].format(command=self._command('reply', section.id, TEXT['uncorrectable_reply']))]
 
     def ended(self, ending: Ending) -> list[str]:
         report = self.files.substitute(ending.end.report)
@@ -749,6 +782,8 @@ class Runbook:
         self.input_spec: dict[str, Any] = {}
         self.executor_specs: dict[str, str] = {}
         self.here = os.path.dirname(os.path.abspath(sys.argv[0]))
+        # Set by `reply` when it asks the executor to correct its reply; printed before what the run does next.
+        self._correcting: tuple[Section, str] | None = None
         self.cmd = f'{sys.executable} {os.path.join(self.here, os.path.basename(sys.argv[0]))}'
 
     def inputs(self, **spec: Any) -> None:
@@ -879,15 +914,22 @@ class Runbook:
         section = state.section(sid)
         if section.status is not Status.RUNNING:
             die(f'section {sid} is {section.status.value}, not running')
-        reply = _parse_reply(raw)
+        reply, problem = _parse_reply(raw)
         step = self.steps.get(section.name)
-        if reply['status'] == Status.DONE.value and isinstance(step, Step):
+        if problem is None and reply['status'] == Status.DONE.value and isinstance(step, Step):
             problem = _reply_problem(reply, step.reply)
-            if problem:
-                reply = {'status': Status.FAILED.value, 'reason': f'invalid reply: {problem}'}
+        log = ProgressLog(run_dir)
+        if problem:
+            section.invalid_replies.append({'reply': raw, 'problem': problem})
+            log.append(f'{sid}: invalid reply ({problem}): {" ".join(raw.split())}')
+            if len(section.invalid_replies) <= CORRECTIONS:
+                self._correcting = (section, problem)
+                log.append(f'{sid}: its executor is asked to correct the reply')
+                return state
+            reply = {'status': Status.FAILED.value, 'reason': f'invalid reply: {problem}'}
         section.reply = reply
         section.close(Status(reply['status']))
-        ProgressLog(run_dir).append(f'{sid}: {json.dumps(reply, ensure_ascii=False)}')
+        log.append(f'{sid}: {json.dumps(reply, ensure_ascii=False)}')
         return state
 
     def _answer(self, run_dir: str, args: list[str]) -> RunState:
@@ -948,6 +990,12 @@ class Runbook:
         """Replays the run, opens sections for what is to launch, and returns the lines to print."""
         plan = Replay(self.steps, self.start_step, state).run()
         renderer = Renderer(self, run_dir, state)
+        if self._correcting:
+            correction = renderer.correction(*self._correcting)
+            return correction + [''] + self._next_lines(run_dir, state, plan, renderer)
+        return self._next_lines(run_dir, state, plan, renderer)
+
+    def _next_lines(self, run_dir: str, state: RunState, plan: Plan, renderer: Renderer) -> list[str]:
         if plan.ending and plan.waiting:
             state.status = Status.RUNNING.value
             return renderer.wait_for_end(plan.ending, plan.waiting)
@@ -970,7 +1018,8 @@ class Runbook:
             section = state.new_section(name, Status.WAITING_FOR_HUMAN)
             log.append(f'{section.label()}: asked: {RunFiles(self.steps, run_dir, state).substitute(step.question)}')
         else:
-            executor = _resolve(step.executor, f'`executor` of step `{name}`', State(state.inputs, plan.done_count))
+            s = State(state.inputs, plan.done_count, failed_count=plan.failed_count)
+            executor = _resolve(step.executor, f'`executor` of step `{name}`', s)
             section = state.new_section(name, Status.RUNNING, executor)
             log.append(f'{section.label()}: launched')
             schema = RunFiles(self.steps, run_dir, state).schema_path(name)
@@ -994,6 +1043,7 @@ class Runbook:
             return 1 if problems else 0
         if self.start_step is None:
             die('no start step: call rb.start(<name>)')
+        self._correcting = None
         run_dir = os.path.abspath(argv[1])
         name = argv[2] if len(argv) > 2 else 'status'
         command = COMMANDS.get(name) or die(f'unknown command {name!r}')
@@ -1017,21 +1067,27 @@ class Runbook:
         return 0
 
 
-def _parse_reply(raw: str) -> dict[str, Any]:
-    """The executor's JSON, or the invalid-reply failure when it is not an object with a known status."""
+def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
+    """The executor's JSON with the schema's nulls dropped, or what keeps it from being a reply."""
     try:
         reply = json.loads(raw)
     except ValueError:
-        return dict(INVALID_REPLY)
-    if not isinstance(reply, dict) or reply.get('status') not in REPLY_STATUSES:
-        return dict(INVALID_REPLY)
+        reply = None
+    if not isinstance(reply, dict):
+        return {}, 'not a JSON object'
+    if not reply:
+        return {}, 'the message has no JSON object'
+    if 'status' not in reply:
+        return {}, "no field 'status'"
+    if reply['status'] not in REPLY_STATUSES:
+        return {}, f"field 'status' must be one of {', '.join(REPLY_STATUSES)}, got {json.dumps(reply['status'])}"
     # The schema has every property required and the unused ones null: a done reply's null reason and a failed
     # reply's null fields are dropped, so what is recorded is what was said.
     done = reply['status'] == Status.DONE.value
     reply = {k: v for k, v in reply.items() if v is not None or (done and k != 'reason')}
     if not done and not (isinstance(reply.get('reason'), str) and reply['reason'].strip()):
         reply['reason'] = NO_REASON
-    return reply
+    return reply, None
 
 
 def _reply_problem(reply: dict[str, Any], fields: dict[str, type]) -> str | None:
