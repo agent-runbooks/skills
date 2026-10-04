@@ -14,7 +14,7 @@ Every step runs as a subagent through this session's own subagent tool, the Agen
 - `brief`: the change to make, as text. The orchestrator saves it to `<run>/brief.md` and passes `"brief": "brief.md"` to `start`
 - `repo`: absolute path of the git repository, the directory this session started in unless the human names another
 - `checks`: the shell command that checks the project, run from `repo`, e.g. `python3 -m unittest` or `pnpm test`. Optional: when it is omitted, the executors use the checks the repository's `AGENTS.md` or `CLAUDE.md` names
-- `maxFixRounds`: integer, default 2. One round is one fix and the review after it. When the rounds are spent and findings remain, the human is asked
+- `maxFixRounds`: integer, default 2. One round is one fix and the review after it. When the rounds are spent and findings remain, the human is asked, and may grant one more round or several
 - `run-id`: given only to resume an interrupted run
 - Smoke input, in any small git repository with a clean tree: brief "Add a file `SMOKE.md` with the single line `smoke`", checks `true`. The expected path is the shortest one: the reviewer finds nothing and the run ends `ready`. A second smoke input reaches the loop and the human step: the same brief, checks `exit 1`, `maxFixRounds` 1, and the answer `stop`. The run ends `needs_attention`. The human deletes `SMOKE.md` and the run directory after either
 
@@ -28,7 +28,7 @@ You are the orchestrator of this run. Orchestrating takes a session that can lau
 
 - run `python3 <skill>/flow.py …` as written below
 - save the input files the Inputs section names into the run directory `start` created
-- launch steps as subagents, with the message `flow.py` prints
+- launch steps as subagents, with the message `flow.py` prints, and with the reply schema where your tool takes one
 - read a step's output file only to quote it to the human
 - ask the human, and report the end of the run
 - show the human the run's status, as the Status group below says
@@ -43,14 +43,17 @@ Starting
 flow.py
 
 - It keeps the state of the run and prints what to do: which steps to launch, with which executor and what message, whom to wait for, what to ask the human, or that the run has ended. Do all of what it prints, then wait. Every command it asks you to run next is printed in full.
-- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{"status": "failed", "reason": "invalid reply"}`. Any JSON argument, for `start` or `reply`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc.
-- The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. `flow.py` keeps the words and writes them where the steps that follow read them.
+- An executor is a named way to launch a step: a new subagent through your own subagent tool, with the model and settings its description gives, or through another tool when the description names one.
+- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{"status": "failed", "reason": "invalid reply"}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
+- The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
 - A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <section>`. Executors you launched in this conversation are not gone: wait for them.
 - You departed from these rules, or did something `flow.py` does not know about: `flow.py <run> log '<one line>'`.
 
 Launching
 
 - Launch every step `flow.py` lists, with the executor it names, and send exactly the text between `--- message ---` and `--- end of message ---`. Add nothing, apart from lines your harness or your own rules require in every subagent prompt. An executor that only relays another agent's reply gets one more line: "Return the agent's final message verbatim."
+- Steps `flow.py` lists together are launched together, in one turn.
+- The message names a `reply schema` file. If your subagent tool can hold a subagent's final message to a JSON schema, give it this one: the path, or the file's content when the tool takes only that. Otherwise leave the file to the executor.
 
 Waiting
 

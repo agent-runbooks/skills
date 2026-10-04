@@ -15,29 +15,3 @@ Report only findings about these changes, not about old code around them. Every 
 Write the review file with three sections. `## Summary`: two to four sentences on what the changes do now, for the human who reads this file at the end of the run. `## Findings`: one heading `### <n>: <title>` per finding, numbered from 1, then the lines `file: <path>:<line>` and `consequence: <one sentence>`, and what to fix. With no findings the section holds the single line `None.` `## Checks`: the Checks section.
 
 `findings` is the number of `###` headings under `## Findings`.
-
-## Reply schema
-
-```json
-{
-  "type": "object",
-  "oneOf": [
-    {
-      "properties": {
-        "status": { "const": "done" },
-        "findings": { "type": "integer", "minimum": 0 }
-      },
-      "required": ["status", "findings"],
-      "additionalProperties": false
-    },
-    {
-      "properties": {
-        "status": { "enum": ["failed", "blocked"] },
-        "reason": { "type": "string", "minLength": 1 }
-      },
-      "required": ["status", "reason"],
-      "additionalProperties": false
-    }
-  ]
-}
-```

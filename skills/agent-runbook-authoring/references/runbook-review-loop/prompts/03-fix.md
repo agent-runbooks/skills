@@ -7,28 +7,3 @@ Address the cause each finding describes rather than silencing its check. A find
 Write `fix.md`: per finding number, what changed (`file:line`) or why it was left, and the Checks section.
 
 `done` means `fix.md` accounts for every finding in `review.md`, each fixed or left with a reason.
-
-## Reply schema
-
-```json
-{
-  "type": "object",
-  "oneOf": [
-    {
-      "properties": {
-        "status": { "const": "done" }
-      },
-      "required": ["status"],
-      "additionalProperties": false
-    },
-    {
-      "properties": {
-        "status": { "enum": ["failed", "blocked"] },
-        "reason": { "type": "string", "minLength": 1 }
-      },
-      "required": ["status", "reason"],
-      "additionalProperties": false
-    }
-  ]
-}
-```

@@ -25,8 +25,8 @@ flow.py:
 
 Prompts:
 
-- Each prompt file stands alone with `common.md`: what to read, what to produce and where, what good looks like, a reply schema. Nothing refers to the conversation or to another step's prompt.
-- The reply schema's `done` branch requires exactly the fields the step's `reply` declares. The `failed | blocked` branch requires `reason`.
+- Each prompt file stands alone with `common.md`: what to read, what to produce and where, what good looks like, what each reply field means. Nothing refers to the conversation or to another step's prompt.
+- No prompt carries a reply schema of its own: the engine writes it from the step's `reply`. Every field `reply` declares is explained in the prompt, and a `next` that reads a field survives a value outside its schema's bounds. A field's schema uses `minimum`, `minLength` and the like only if every harness the runbook targets accepts them.
 - A prompt that runs commands says where their exit codes and failing output go, and what counts as skipped.
 - An output file another step parses has its format stated: headings, fields, what to write when there is nothing.
 - `common.md` says what "the changes" are and how the checks are run.
@@ -35,7 +35,7 @@ Prompts:
 SKILL.md:
 
 - Inputs match `rb.inputs`, with a smoke input and its cleanup.
-- Every executor description names a model and a launch tool the orchestrator has.
+- Every executor description names a model, and a launch tool only when it is not the orchestrator's own subagent tool. None depends on one harness's name for a tool.
 
 ## After the run: the run directory against flow.py
 

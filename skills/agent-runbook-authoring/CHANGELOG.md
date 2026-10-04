@@ -2,6 +2,19 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.2.0
+
+No change is required in an existing `flow.py`. A runbook that takes this engine also takes the new Execution rules and Executor constraints from `references/template.md`, and drops the `## Reply schema` section from its prompts.
+
+- Fixed: a step with `after` behind a `parallel(...)` that the flow reaches a second time launched as soon as one branch of the new round was done, with the other branch's file from the round before, and launched again when that branch finished. A step with `after` now waits for sections it has not joined on yet. When a loop runs only some of its `after` steps again, it takes the earlier section of the others once nothing else is running, as before.
+- The engine writes the JSON Schema of a step's reply to `<run>/schemas/<step>.json` from the step's `reply`, and the launch message carries `reply schema: <path>`. Prompts no longer hold a schema. The schema is one closed object with every property required and the unused ones null, the form harnesses that enforce a schema accept; a `null` `reason` of a `done` reply and the `null` fields of a `failed` or `blocked` one are dropped before the reply is recorded, and a `failed` or `blocked` reply without a `reason` gets `no reason given`.
+- A `reply` field may be a JSON Schema, `{'type': 'integer', 'minimum': 0, 'description': '…'}`, in place of a type, and `list` and `dict` are types too. The engine still checks the `type` only. Type names in an `invalid reply` reason are JSON's: `boolean`, `integer`.
+- `rb.human(reply={...})`: fields the orchestrator takes from the human's words. `answer` then takes a JSON object with `choice` and the fields, and `next` gets them as `a.choice`, `a.<field>`. `--check` refuses a `reply` field named `status`, `reason` or `choice`, and one that is neither a JSON type nor a schema.
+- Only one argument of a command can be `-`.
+- A `next`, `on_failure`, `skip` or `executor` function that raises no longer leaves a reply in `progress.md` and not in `state.json`: what the command recorded is saved first, the engine names the function, and `flow.py <run>` goes on once `flow.py` is fixed.
+- `s.replies(step)`: the replies of every `done` section of a step, for a budget the human extends.
+- Output: step names are in backticks; a launch reads ``launch step `fix` as a new subagent, executor `coder`: …``; several launches are announced by `N steps to launch together, in one turn:` and set apart by empty lines. The `end:` line of `progress.md` has the step name in backticks.
+
 ## 1.1.1
 
 - The source link in the docstring points to `agent-runbooks/skills`, where the engine now lives. No change in behavior.

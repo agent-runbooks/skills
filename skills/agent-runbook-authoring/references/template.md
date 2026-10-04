@@ -9,7 +9,7 @@ runbook-<name>/
   runbook.py        the engine behind flow.py, copied from this skill
   prompts/
     common.md       what every executor reads first: project preamble, executor constraints
-    <nn>-<step>.md  one file per step: the task, the deliverable, the reply schema
+    <nn>-<step>.md  one file per step: the task, the deliverable, what the reply's fields mean
 ```
 
 Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`runbook.py`](runbook.py) into the runbook directory. `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
@@ -59,7 +59,7 @@ You are the orchestrator of this run. Orchestrating takes a session that can lau
 
 - run `python3 <skill>/flow.py …` as written below
 - save the input files the Inputs section names into the run directory `start` created
-- launch steps as subagents, with the message `flow.py` prints
+- launch steps as subagents, with the message `flow.py` prints, and with the reply schema where your tool takes one
 - read a step's output file only to quote it to the human
 - ask the human, and report the end of the run
 - show the human the run's status, as the Status group below says
@@ -74,14 +74,17 @@ Starting
 flow.py
 
 - It keeps the state of the run and prints what to do: which steps to launch, with which executor and what message, whom to wait for, what to ask the human, or that the run has ended. Do all of what it prints, then wait. Every command it asks you to run next is printed in full.
-- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{"status": "failed", "reason": "invalid reply"}`. Any JSON argument, for `start` or `reply`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc.
-- The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. `flow.py` keeps the words and writes them where the steps that follow read them.
+- An executor is a named way to launch a step: a new subagent through your own subagent tool, with the model and settings its description gives, or through another tool when the description names one.
+- A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{"status": "failed", "reason": "invalid reply"}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
+- The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
 - A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <section>`. Executors you launched in this conversation are not gone: wait for them.
 - You departed from these rules, or did something `flow.py` does not know about: `flow.py <run> log '<one line>'`.
 
 Launching
 
 - Launch every step `flow.py` lists, with the executor it names, and send exactly the text between `--- message ---` and `--- end of message ---`. Add nothing, apart from lines your harness or your own rules require in every subagent prompt. An executor that only relays another agent's reply gets one more line: "Return the agent's final message verbatim."
+- Steps `flow.py` lists together are launched together, in one turn.
+- The message names a `reply schema` file. If your subagent tool can hold a subagent's final message to a JSON schema, give it this one: the path, or the file's content when the tool takes only that. Otherwise leave the file to the executor.
 
 Waiting
 
@@ -118,7 +121,7 @@ Ending
 
 You run one step of a larger procedure. The project's procedures for task cycles, review and commit are not yours to start. Change repository files only as your step instructs, and leave the changes uncommitted unless it instructs a commit. A file name in your step's prompt is a name, not a path: the launch message gives a `write <name>: <path>` line for each file you write, and a `read <name>: <path>` line for each file you read, or says it is absent. Write other files only at the paths your launch message gives. Commits, pushes, comments, tickets and other external writes happen only when your step instructs them. Nobody will answer a question. If you cannot proceed, stop and reply `blocked`.
 
-Your final message is the JSON your step's schema describes and nothing else. `status` is `done` when the deliverable exists as described, `failed` when you tried and it does not, `blocked` when you cannot proceed. `failed` and `blocked` carry a one-line `reason`. Other fields are required only with `done`. Explanations and evidence go into your step's output file.
+Your final message is one JSON object that fits the schema in the file your launch message gives as `reply schema`, and nothing else. `status` is `done` when the deliverable exists as described, `failed` when you tried and it does not, `blocked` when you cannot proceed. The schema lists every property as required: with `done`, `reason` is null and the other fields are set; with `failed` or `blocked`, `reason` is one line and the other fields are null. Explanations and evidence go into your step's output file.
 
 ## Step prompt file
 
@@ -127,32 +130,10 @@ Your final message is the JSON your step's schema describes and nothing else. `s
 
 <The task. Which files under <run> and <repo> to read. What to produce and where, under <run>. What a good result looks like. Two to six short paragraphs. A step that runs commands says where their exit codes and failing output go in its report. A file another step parses has its format stated, including what to write when there is nothing.>
 
-## Reply schema
-
-```json
-{
-  "type": "object",
-  "oneOf": [
-    {
-      "properties": {
-        "status": { "const": "done" },
-        "<field>": { "type": "<type>", "description": "<meaning>" }
-      },
-      "required": ["status", "<field>"],
-      "additionalProperties": false
-    },
-    {
-      "properties": {
-        "status": { "enum": ["failed", "blocked"] },
-        "reason": { "type": "string", "minLength": 1 }
-      },
-      "required": ["status", "reason"],
-      "additionalProperties": false
-    }
-  ]
-}
-```
+<What `done` means for this step, and for each field the step's `reply` declares, what it says and how it is counted. One line each.>
 ````
+
+The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine writes it to `<run>/schemas/<step>.json` and gives the executor its path in the launch message.
 
 ## Notes for the author
 

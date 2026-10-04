@@ -7,28 +7,3 @@ Then run the checks. Failing checks do not make this step `failed`: record them,
 Write `implement.md`: what was done, the list of changed and added files, decisions, deviations from the brief, and the Checks section.
 
 `done` means the repository holds the implementation and `implement.md` describes it. If you changed nothing, reply `failed` with the reason.
-
-## Reply schema
-
-```json
-{
-  "type": "object",
-  "oneOf": [
-    {
-      "properties": {
-        "status": { "const": "done" }
-      },
-      "required": ["status"],
-      "additionalProperties": false
-    },
-    {
-      "properties": {
-        "status": { "enum": ["failed", "blocked"] },
-        "reason": { "type": "string", "minLength": 1 }
-      },
-      "required": ["status", "reason"],
-      "additionalProperties": false
-    }
-  ]
-}
-```
