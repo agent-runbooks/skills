@@ -229,15 +229,15 @@ def status_text(run: str, now: datetime) -> str:
 class Handler(BaseHTTPRequestHandler):
     """Serves the page, the library, /api/state and /api/file for the run in self.server.run."""
 
-    server: RunServer  # pyright: ignore[reportIncompatibleVariableOverride]
-
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def do_GET(self) -> None:
-        self.server.last_request = time.monotonic()
+        server = self.server
+        assert isinstance(server, RunServer)
+        server.last_request = time.monotonic()
         url = urlsplit(self.path)
-        port = self.server.server_address[1]
+        port = server.server_address[1]
         # A foreign Host is a page on another site that rebound its domain to 127.0.0.1 to read the run.
         if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
             self.send(HTTPStatus.FORBIDDEN, b'forbidden', 'text/plain; charset=utf-8')
@@ -247,13 +247,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(HTTPStatus.OK, f.read(), content_type)
         elif url.path == '/api/state':
             try:
-                body = json.dumps(snapshot(self.server.run, datetime.now(timezone.utc)), ensure_ascii=False)
+                body = json.dumps(snapshot(server.run, datetime.now(timezone.utc)), ensure_ascii=False)
             except StateUnreadable as e:
                 self.send(HTTPStatus.SERVICE_UNAVAILABLE, str(e).encode(), 'text/plain; charset=utf-8')
                 return
             self.send(HTTPStatus.OK, body.encode(), 'application/json; charset=utf-8')
         elif url.path == '/api/file':
-            path = run_file(self.server.run, parse_qs(url.query).get('name', [''])[0])
+            path = run_file(server.run, parse_qs(url.query).get('name', [''])[0])
             if path is None:
                 self.send(HTTPStatus.NOT_FOUND, b'not found', 'text/plain; charset=utf-8')
                 return
