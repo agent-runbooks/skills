@@ -22,6 +22,8 @@ A change in the engine's behavior is a release:
 
 Run the steps of `.github/workflows/test.yml` locally before calling a change done. `tests/fixtures/` holds real run folders that `test_view.py` reads; change them together with the tests.
 
+The `lint` job runs ruff and pyright from the root `pyproject.toml` through `uv run`; `uv run ruff format` fixes the layout. These are dev tools only: no skill imports them.
+
 ## Commits
 
 A commit message says what changed in behavior, not which files moved. An engine release opens with `Engine <version>:`.

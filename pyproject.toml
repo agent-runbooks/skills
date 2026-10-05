@@ -1,0 +1,42 @@
+# Dev tooling only: the skills ship without it and run on the standard library.
+
+[project]
+name = "agent-runbooks-skills"
+version = "0"
+requires-python = ">=3.9"
+
+[dependency-groups]
+dev = [
+  "pyright==1.1.414",
+  "ruff==0.16.10",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+# A byte-for-byte copy of references/runbook.py; CI compares the two.
+extend-exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/runbook.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# E501: the formatter owns line length; what it leaves long is string literals.
+# SIM117: a merged `with` this long needs parentheses, which Python 3.9 lacks.
+# UP036: the engine and the viewer check the interpreter version on purpose, they run on whatever python3 the machine has.
+ignore = ["E501", "SIM117", "UP036"]
+
+[tool.ruff.lint.per-file-ignores]
+# A flow.py names its next/skip helpers with lambdas, as flow-language.md teaches.
+"**/flow.py" = ["E731"]
+
+[tool.ruff.format]
+quote-style = "single"
+# Code samples in the docs keep their hand layout.
+exclude = ["*.md"]
+
+[tool.pyright]
+include = ["skills"]
+exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/runbook.py"]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"

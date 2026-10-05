@@ -8,6 +8,7 @@
 <run> is a run directory, the one holding state.json, or a directory of runs such as .agent-runbooks/runs, in which
 case the run whose state.json was modified last is shown.
 """
+
 from __future__ import annotations
 
 import sys
@@ -34,13 +35,17 @@ TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 MARKS = {'done': '✓', 'running': '●', 'waiting_for_human': '?', 'failed': '✗', 'blocked': '!'}
 OPEN = ('running', 'waiting_for_human')
 WAITING = 'waiting for the human'
-STATIC = {'/': ('page.html', 'text/html; charset=utf-8'),
-          '/marked.umd.js': ('marked.umd.js', 'text/javascript; charset=utf-8'),
-          '/page.js': ('page.js', 'text/javascript; charset=utf-8')}
+STATIC = {
+    '/': ('page.html', 'text/html; charset=utf-8'),
+    '/marked.umd.js': ('marked.umd.js', 'text/javascript; charset=utf-8'),
+    '/page.js': ('page.js', 'text/javascript; charset=utf-8'),
+}
 # Step outputs are written by agents that may have read untrusted text: no remote images to leak data through,
 # no javascript: links, nothing loaded from or sent to other origins.
-CSP = ("default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; "
-       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 # Browsers slow the page's polling in a background tab to about once a minute: well under this.
 IDLE_MINUTES = 30
 
@@ -54,6 +59,7 @@ class StateUnreadable(Exception):
 
 
 # ---------- the run directory ----------
+
 
 def find_run(path: str) -> str:
     """The run directory path names: itself if it holds state.json, else its subdirectory with the newest one."""
@@ -126,10 +132,18 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
     files = list_files(run)
     progress = read_progress(run)
     by_section, run_files = section_files([f['name'] for f in files], len(state['sections']))
-    sections = [{'id': s['id'], 'files': by_section[i], 'log': section_log(progress, s['id'])}
-                for i, s in enumerate(state['sections'])]
-    return {'name': os.path.basename(run), 'now': now.strftime(TIME_FORMAT), 'state': state, 'files': files,
-            'sections': sections, 'run_files': run_files}
+    sections = [
+        {'id': s['id'], 'files': by_section[i], 'log': section_log(progress, s['id'])}
+        for i, s in enumerate(state['sections'])
+    ]
+    return {
+        'name': os.path.basename(run),
+        'now': now.strftime(TIME_FORMAT),
+        'state': state,
+        'files': files,
+        'sections': sections,
+        'run_files': run_files,
+    }
 
 
 def run_file(run: str, name: str) -> str | None:
@@ -144,6 +158,7 @@ def run_file(run: str, name: str) -> str | None:
 
 
 # ---------- text status ----------
+
 
 def parse_time(value: Any) -> datetime | None:
     """A state.json timestamp, or None when it is absent or malformed."""
@@ -179,16 +194,21 @@ def summary(section: dict[str, Any]) -> str:
     if status == 'done' and not reply:
         return note or ''
     if status == 'done':
-        return ', '.join(f'{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
-                         for k, v in reply.items() if k != 'status')
+        return ', '.join(
+            f'{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
+            for k, v in reply.items()
+            if k != 'status'
+        )
     return ''
 
 
 def status_text(run: str, now: datetime) -> str:
     """The text status: a header line, then one aligned line per section."""
     state = read_state(run)
-    rows = [[MARKS.get(s.get('status'), ' '), s.get('id', ''), s.get('executor') or '', duration(s, now), summary(s)]
-            for s in state['sections']]
+    rows = [
+        [MARKS.get(s.get('status'), ' '), s.get('id', ''), s.get('executor') or '', duration(s, now), summary(s)]
+        for s in state['sections']
+    ]
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(len(rows[0]))] if rows else []
     if widths and widths[3]:
         widths[3] = max(widths[3], 5)
@@ -205,18 +225,19 @@ def status_text(run: str, now: datetime) -> str:
 
 # ---------- server ----------
 
+
 class Handler(BaseHTTPRequestHandler):
     """Serves the page, the library, /api/state and /api/file for the run in self.server.run."""
-
-    server: RunServer
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def do_GET(self) -> None:
-        self.server.last_request = time.monotonic()
+        server = self.server
+        assert isinstance(server, RunServer)
+        server.last_request = time.monotonic()
         url = urlsplit(self.path)
-        port = self.server.server_address[1]
+        port = server.server_address[1]
         # A foreign Host is a page on another site that rebound its domain to 127.0.0.1 to read the run.
         if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
             self.send(HTTPStatus.FORBIDDEN, b'forbidden', 'text/plain; charset=utf-8')
@@ -226,13 +247,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(HTTPStatus.OK, f.read(), content_type)
         elif url.path == '/api/state':
             try:
-                body = json.dumps(snapshot(self.server.run, datetime.now(timezone.utc)), ensure_ascii=False)
+                body = json.dumps(snapshot(server.run, datetime.now(timezone.utc)), ensure_ascii=False)
             except StateUnreadable as e:
                 self.send(HTTPStatus.SERVICE_UNAVAILABLE, str(e).encode(), 'text/plain; charset=utf-8')
                 return
             self.send(HTTPStatus.OK, body.encode(), 'application/json; charset=utf-8')
         elif url.path == '/api/file':
-            path = run_file(self.server.run, parse_qs(url.query).get('name', [''])[0])
+            path = run_file(server.run, parse_qs(url.query).get('name', [''])[0])
             if path is None:
                 self.send(HTTPStatus.NOT_FOUND, b'not found', 'text/plain; charset=utf-8')
                 return
@@ -286,14 +307,19 @@ class RunServer(ThreadingHTTPServer):
 
 # ---------- entry point ----------
 
+
 def main(argv: list[str] | None = None) -> int:
     """Run the command in argv (sys.argv[1:] by default); returns the exit code."""
     parser = argparse.ArgumentParser(prog='view.py', description='Show a runbook run.')
     parser.add_argument('run', help='a run directory, or a directory of runs')
     parser.add_argument('--status', action='store_true', help='print the text status and exit')
     parser.add_argument('--port', type=int, default=0, help='port to serve on, a free one by default')
-    parser.add_argument('--idle-minutes', type=float, default=IDLE_MINUTES,
-                        help=f'stop after this many minutes without a request, {IDLE_MINUTES} by default; 0 never stops')
+    parser.add_argument(
+        '--idle-minutes',
+        type=float,
+        default=IDLE_MINUTES,
+        help=f'stop after this many minutes without a request, {IDLE_MINUTES} by default; 0 never stops',
+    )
     args = parser.parse_args(argv)
     try:
         run = find_run(args.run)
