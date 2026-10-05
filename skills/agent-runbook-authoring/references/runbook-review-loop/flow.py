@@ -65,9 +65,7 @@ rb.human(
     },
     question='Fix rounds are spent and `<run>/review.md` still lists findings. '
     'More rounds, and how many, or stop here? Anything you add goes to the coder.',
-    next=lambda a, s: (
-        'fix' if a.choice == 'more rounds' else end('needs_attention', 'read <run>/review.md')
-    ),
+    next=lambda a, s: 'fix' if a.choice == 'more rounds' else end('needs_attention', 'read <run>/review.md'),
 )
 
 if __name__ == '__main__':

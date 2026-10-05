@@ -18,6 +18,7 @@ declares reply fields. One argument may be `-` to read it from stdin, for text w
 Source: https://github.com/agent-runbooks/skills/tree/main/skills/agent-runbook-authoring
 Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the flow.py API: CHANGELOG.md there.
 """
+
 from __future__ import annotations
 
 __version__ = '1.4.0'
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 # ---------- targets ----------
+
 
 @dataclass(frozen=True)
 class End:
@@ -99,6 +101,7 @@ def die(msg: str) -> NoReturn:
 
 # ---------- declarations ----------
 
+
 @dataclass
 class Step:
     """A step an executor runs. Fields mirror the parameters of Runbook.step."""
@@ -153,9 +156,14 @@ class State:
     """What a `next` or `skip` function may ask about the run: `s.inputs.<name>`, `s.done(step)`, `s.failed(step)`,
     `s.reply(step)`, `s.replies(step)`."""
 
-    def __init__(self, inputs: dict[str, Any], done_count: dict[str, int],
-                 latest: dict[str, Section] | None = None, history: dict[str, list[Section]] | None = None,
-                 failed_count: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: dict[str, Any],
+        done_count: dict[str, int],
+        latest: dict[str, Section] | None = None,
+        history: dict[str, list[Section]] | None = None,
+        failed_count: dict[str, int] | None = None,
+    ) -> None:
         self.inputs = SimpleNamespace(**inputs)
         self._done = done_count
         self._failed = failed_count or {}
@@ -186,6 +194,7 @@ class State:
 
 
 # ---------- run state ----------
+
 
 class Status(Enum):
     """Status of a section in state.json."""
@@ -258,16 +267,33 @@ class Section:
         self.status = status
 
     def to_json(self) -> dict[str, Any]:
-        return dict(id=self.id, name=self.name, status=self.status.value, reply=self.reply, note=self.note,
-                    answer=self.answer, executor=self.executor, started_at=self.started_at, ended_at=self.ended_at,
-                    invalid_replies=self.invalid_replies)
+        return dict(
+            id=self.id,
+            name=self.name,
+            status=self.status.value,
+            reply=self.reply,
+            note=self.note,
+            answer=self.answer,
+            executor=self.executor,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            invalid_replies=self.invalid_replies,
+        )
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Section:
-        return cls(id=data['id'], name=data['name'], status=Status(data['status']), reply=data['reply'],
-                   note=data['note'], answer=data.get('answer'), executor=data.get('executor'),
-                   started_at=data.get('started_at'), ended_at=data.get('ended_at'),
-                   invalid_replies=data.get('invalid_replies') or [])
+        return cls(
+            id=data['id'],
+            name=data['name'],
+            status=Status(data['status']),
+            reply=data['reply'],
+            note=data['note'],
+            answer=data.get('answer'),
+            executor=data.get('executor'),
+            started_at=data.get('started_at'),
+            ended_at=data.get('ended_at'),
+            invalid_replies=data.get('invalid_replies') or [],
+        )
 
 
 @dataclass
@@ -290,12 +316,17 @@ class RunState:
             die(f'{path}: not found')
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
-        return cls(runbook=data['runbook'], status=data['status'], inputs=data['inputs'],
-                   sections=[Section.from_json(s) for s in data['sections']])
+        return cls(
+            runbook=data['runbook'],
+            status=data['status'],
+            inputs=data['inputs'],
+            sections=[Section.from_json(s) for s in data['sections']],
+        )
 
     def save(self, run_dir: str) -> None:
-        data = dict(runbook=self.runbook, status=self.status, inputs=self.inputs,
-                    sections=[s.to_json() for s in self.sections])
+        data = dict(
+            runbook=self.runbook, status=self.status, inputs=self.inputs, sections=[s.to_json() for s in self.sections]
+        )
         with open(self.path(run_dir), 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -360,12 +391,15 @@ class ProgressLog:
         self.path = os.path.join(run_dir, 'progress.md')
 
     def create(self, runbook: str, inputs: dict[str, Any]) -> None:
-        values = ''.join(f'- {k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}\n'
-                         for k, v in inputs.items())
+        values = ''.join(
+            f'- {k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}\n' for k, v in inputs.items()
+        )
         with open(self.path, 'w', encoding='utf-8') as f:
-            f.write(f'# Run {os.path.basename(self.run_dir)}\n\n'
-                    f'Runbook `{runbook}`. State in `state.json`. Inputs:\n\n'
-                    f'{values}\n## Log\n\n')
+            f.write(
+                f'# Run {os.path.basename(self.run_dir)}\n\n'
+                f'Runbook `{runbook}`. State in `state.json`. Inputs:\n\n'
+                f'{values}\n## Log\n\n'
+            )
 
     def append(self, line: str) -> None:
         with open(self.path, 'a', encoding='utf-8') as f:
@@ -373,6 +407,7 @@ class ProgressLog:
 
 
 # ---------- replay ----------
+
 
 @dataclass
 class Ending:
@@ -435,8 +470,9 @@ class Replay:
         if self._plan.ending:
             # A branch cut off by the ending may still have an executor at work: the run ends once it reports.
             seen = {s.id for s in self._plan.waiting}
-            self._plan.waiting += [s for s in self._state.sections
-                                   if s.status is Status.RUNNING and not s.superseded and s.id not in seen]
+            self._plan.waiting += [
+                s for s in self._state.sections if s.status is Status.RUNNING and not s.superseded and s.id not in seen
+            ]
         return self._plan
 
     def _visit(self, name: str) -> None:
@@ -558,9 +594,9 @@ TEXT = {
     'choices': 'Choices: {choices}',
     'free_text': 'Free text',
     'side_effect_failure': 'ask the human: step `{label}` has side effects and ended {status}{reason}. '
-                           'On yes: {relaunch}. On no: {log} and stop.',
+    'On yes: {relaunch}. On no: {log} and stop.',
     'correct': 'the reply of step `{label}` did not pass the check ({problem}). Send this to the subagent that ran it, '
-               'as a follow-up message in its session, not as a new launch:',
+    'as a follow-up message in its session, not as a new launch:',
     'correct_then': 'when it answers: {command}',
     'correct_cannot': 'if your tool cannot send a message to a subagent that has finished: {command}',
     'still_running': 'still running: {labels}',
@@ -590,13 +626,14 @@ TEXT = {
     'absent': 'absent, no earlier step wrote it',
     'message_partial': 'The tree may hold a partial earlier attempt.',
     'message_correct': 'Your final message did not pass the check: {problem}. Do not redo the step and change nothing. '
-                       'Reply with one JSON object that fits {schema} for the work already done, and nothing else. '
-                       'If the work is not done, reply failed with a one-line reason.',
+    'Reply with one JSON object that fits {schema} for the work already done, and nothing else. '
+    'If the work is not done, reply failed with a one-line reason.',
     'message_close': '--- end of message ---',
     'missing_repo': '<repo: not among the inputs>',
     'missing_input': '<not among the inputs>',
     'missing_executor': '<executor not declared>',
 }
+
 
 class Renderer:
     """Turns a plan into the lines the orchestrator reads on stdout. The wording lives in TEXT."""
@@ -621,20 +658,32 @@ class Renderer:
     def correction(self, section: Section, problem: str) -> list[str]:
         """What the orchestrator sends the executor whose reply did not pass the check."""
         body = TEXT['message_correct'].format(problem=problem, schema=self.files.schema_path(section.name))
-        return [TEXT['correct'].format(label=section.label(), problem=problem),
-                TEXT['message_open'], body, TEXT['message_close'],
-                TEXT['correct_then'].format(command=self._command('reply', section.id, TEXT['reply_arg'])),
-                TEXT['correct_cannot'].format(command=self._command('reply', section.id, TEXT['uncorrectable_reply']))]
+        return [
+            TEXT['correct'].format(label=section.label(), problem=problem),
+            TEXT['message_open'],
+            body,
+            TEXT['message_close'],
+            TEXT['correct_then'].format(command=self._command('reply', section.id, TEXT['reply_arg'])),
+            TEXT['correct_cannot'].format(command=self._command('reply', section.id, TEXT['uncorrectable_reply'])),
+        ]
 
     def ended(self, ending: Ending) -> list[str]:
         report = self.files.substitute(ending.end.report)
-        return [TEXT['ended'].format(status=ending.end.status, why=ending.why, run=self.run_dir,
-                                     report=TEXT['report'].format(report=report) if report else '')]
+        return [
+            TEXT['ended'].format(
+                status=ending.end.status,
+                why=ending.why,
+                run=self.run_dir,
+                report=TEXT['report'].format(report=report) if report else '',
+            )
+        ]
 
     def pending(self, plan: Plan, opened: list[Section]) -> list[str]:
         """The lines for what is open: questions, launches, waits. Blocks are separated by an empty line."""
-        blocks: list[list[str]] = [[self._side_effect_failure(section) for section in plan.side_effect_failures]
-                                   + [self._waiting_for_human(section) for section in plan.humans]]
+        blocks: list[list[str]] = [
+            [self._side_effect_failure(section) for section in plan.side_effect_failures]
+            + [self._waiting_for_human(section) for section in plan.humans]
+        ]
         launches = [s for s in opened if isinstance(self.rb.steps[s.name], Step)]
         if len(launches) > 1:
             blocks.append([TEXT['launch_together'].format(count=len(launches))])
@@ -655,22 +704,28 @@ class Renderer:
     def _side_effect_failure(self, section: Section) -> str:
         reason = TEXT['reason'].format(reason=section.reason) if section.reason else ''
         return TEXT['side_effect_failure'].format(
-            label=section.label(), status=section.status.value, reason=reason,
-            relaunch=self._command('relaunch', section.id), log=self._command('log', TEXT['log_arg']))
+            label=section.label(),
+            status=section.status.value,
+            reason=reason,
+            relaunch=self._command('relaunch', section.id),
+            log=self._command('log', TEXT['log_arg']),
+        )
 
     def _waiting_for_human(self, section: Section) -> str:
         step = self.rb.steps[section.name]
         choices = TEXT['choices'].format(choices=' | '.join(step.choices)) if step.choices else TEXT['free_text']
         if step.reply:
             choices += TEXT['fields'].format(fields=self._fields(step))
-        return TEXT['waiting_for_human'].format(label=section.label(), choices=choices,
-                                                command=self._answer_command(step, section))
+        return TEXT['waiting_for_human'].format(
+            label=section.label(), choices=choices, command=self._answer_command(step, section)
+        )
 
     def _answer_command(self, step: HumanStep, section: Section) -> str:
         arg = TEXT['answer_arg'] if step.choices else TEXT['answer_free_arg']
         if step.reply:
-            keys = ([TEXT['answer_json_choice']] if step.choices else []) \
-                + [TEXT['answer_json_field'].format(name=name) for name in step.reply]
+            keys = ([TEXT['answer_json_choice']] if step.choices else []) + [
+                TEXT['answer_json_field'].format(name=name) for name in step.reply
+            ]
             arg = TEXT['answer_json_arg'].format(keys=', '.join(keys))
         return self._command('answer', section.id, arg)
 
@@ -680,8 +735,8 @@ class Renderer:
         parts = []
         for name, declared in step.reply.items():
             schema = _field_schema(declared)
-            kind = f" ({schema['type']})" if isinstance(schema.get('type'), str) else ''
-            about = f": {schema['description']}" if schema.get('description') else ''
+            kind = f' ({schema["type"]})' if isinstance(schema.get('type'), str) else ''
+            about = f': {schema["description"]}' if schema.get('description') else ''
             parts.append(f'{name}{kind}{about}')
         return '; '.join(parts)
 
@@ -699,8 +754,11 @@ class Renderer:
     def _launch(self, step: Step, section: Section) -> list[str]:
         inputs = self.state.inputs
         executor = section.executor
-        headline = TEXT['launch'].format(label=section.label(), executor=executor,
-                                         spec=self.rb.executor_specs.get(executor, TEXT['missing_executor']))
+        headline = TEXT['launch'].format(
+            label=section.label(),
+            executor=executor,
+            spec=self.rb.executor_specs.get(executor, TEXT['missing_executor']),
+        )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
         lines = [headline, TEXT['message_open']] + self._message(step, section, inputs) + [TEXT['message_close']]
@@ -708,10 +766,14 @@ class Renderer:
         return lines
 
     def _message(self, step: Step, section: Section, inputs: dict[str, Any]) -> list[str]:
-        lines = [TEXT['message_read'].format(common=os.path.join(self.rb.here, 'prompts', 'common.md'),
-                                             prompt=os.path.join(self.rb.here, step.prompt)),
-                 TEXT['message_repo'].format(repo=inputs.get('repo', TEXT['missing_repo'])),
-                 TEXT['message_run'].format(run=self.run_dir)]
+        lines = [
+            TEXT['message_read'].format(
+                common=os.path.join(self.rb.here, 'prompts', 'common.md'),
+                prompt=os.path.join(self.rb.here, step.prompt),
+            ),
+            TEXT['message_repo'].format(repo=inputs.get('repo', TEXT['missing_repo'])),
+            TEXT['message_run'].format(run=self.run_dir),
+        ]
         for item in step.inputs:
             if isinstance(item, tuple):
                 key, value = item
@@ -723,8 +785,11 @@ class Renderer:
         for name in step.reads:
             if name == WORKING_TREE:
                 continue
-            path = self.files.latest(name, before=section) if self.files.is_output(name) \
+            path = (
+                self.files.latest(name, before=section)
+                if self.files.is_output(name)
                 else os.path.join(self.run_dir, name)
+            )
             lines.append(TEXT['message_file'].format(name=name, path=path or TEXT['absent']))
         lines.append(TEXT['message_schema'].format(path=self.files.schema_path(step.name)))
         if any(s.name == step.name and s.superseded for s in self.state.sections):
@@ -733,6 +798,7 @@ class Renderer:
 
 
 # ---------- inputs ----------
+
 
 def _coerce(value: Any, typ: type) -> Any:
     """Command-line inputs arrive as strings: '2' for an int, 'true' or 'false' for a bool."""
@@ -771,6 +837,7 @@ def _resolve_inputs(spec: dict[str, Any], given: dict[str, Any]) -> dict[str, An
 
 # ---------- runbook ----------
 
+
 @dataclass(frozen=True)
 class Command:
     """A CLI command on a run directory: its handler and how many arguments it takes."""
@@ -806,10 +873,22 @@ class Runbook:
         """The step a run begins with."""
         self.start_step = name
 
-    def step(self, name: str, *, executor: str | Callable[[State], str], prompt: str, next: Route,
-             inputs: Any = (), reply: dict[str, Any] | None = None, reads: Any = (), writes: Any = (),
-             after: Any = (), side_effects: str | None = None, on_failure: Route = None,
-             skip: Callable[[State], Target] | None = None) -> None:
+    def step(
+        self,
+        name: str,
+        *,
+        executor: str | Callable[[State], str],
+        prompt: str,
+        next: Route,
+        inputs: Any = (),
+        reply: dict[str, Any] | None = None,
+        reads: Any = (),
+        writes: Any = (),
+        after: Any = (),
+        side_effects: str | None = None,
+        on_failure: Route = None,
+        skip: Callable[[State], Target] | None = None,
+    ) -> None:
         """A step an executor runs.
 
         executor: a name declared with executor(), or a function (s) -> name, to pick by inputs.
@@ -828,12 +907,32 @@ class Runbook:
         skip: a function (s) -> target or None, called once `after` is satisfied. A target is followed instead
         of launching the step.
         """
-        self.steps[name] = Step(name=name, executor=executor, prompt=prompt, next=next, inputs=list(inputs),
-                             reply=reply or {}, reads=list(reads), writes=list(writes), after=list(after),
-                             side_effects=side_effects, on_failure=on_failure, skip=skip)
+        self.steps[name] = Step(
+            name=name,
+            executor=executor,
+            prompt=prompt,
+            next=next,
+            inputs=list(inputs),
+            reply=reply or {},
+            reads=list(reads),
+            writes=list(writes),
+            after=list(after),
+            side_effects=side_effects,
+            on_failure=on_failure,
+            skip=skip,
+        )
 
-    def human(self, name: str, *, question: str, next: Route, choices: Any = (),
-              reply: dict[str, Any] | None = None, writes: str | None = None, after: Any = ()) -> None:
+    def human(
+        self,
+        name: str,
+        *,
+        question: str,
+        next: Route,
+        choices: Any = (),
+        reply: dict[str, Any] | None = None,
+        writes: str | None = None,
+        after: Any = (),
+    ) -> None:
         """A question to the human.
 
         choices: the strings next() compares against; the orchestrator maps the answer to one of them. Without
@@ -844,8 +943,15 @@ class Runbook:
         a has the choice as a.choice and the fields as attributes.
         writes: a file name the engine writes the human's verbatim words to, numbered like a step's output.
         """
-        self.steps[name] = HumanStep(name=name, question=question, choices=list(choices), next=next,
-                                     reply=reply or {}, writes=writes, after=list(after))
+        self.steps[name] = HumanStep(
+            name=name,
+            question=question,
+            choices=list(choices),
+            next=next,
+            reply=reply or {},
+            writes=writes,
+            after=list(after),
+        )
 
     # ---------- check ----------
 
@@ -951,7 +1057,7 @@ class Runbook:
         if step.reply:
             picked, fields = _parse_answer(answer, step)
             if not step.choices and len(args) < 3:
-                die('answer: a free-text step takes the human\'s words after the JSON object')
+                die("answer: a free-text step takes the human's words after the JSON object")
             answer = picked if step.choices else args[2]
         words = args[2] if len(args) > 2 else answer
         choice = step.match(answer)
@@ -1068,8 +1174,10 @@ class Runbook:
         try:
             lines = self._advance(run_dir, state)
         except FlowError as e:
-            die(f'{e}. What you passed is recorded. This is a defect in flow.py: report it to the human and stop. '
-                f'Once it is fixed, the run goes on with: {self.cmd} {run_dir}')
+            die(
+                f'{e}. What you passed is recorded. This is a defect in flow.py: report it to the human and stop. '
+                f'Once it is fixed, the run goes on with: {self.cmd} {run_dir}'
+            )
         state.save(run_dir)
         print('\n'.join(lines))
         return 0
@@ -1109,10 +1217,24 @@ def _reply_problem(reply: dict[str, Any], fields: dict[str, type]) -> str | None
     return None
 
 
-JSON_TYPES = {bool: 'boolean', int: 'integer', float: 'number', str: 'string', list: 'array', dict: 'object',
-              type(None): 'null'}
-PYTHON_TYPES: dict[str, Any] = {'boolean': bool, 'integer': int, 'number': (int, float), 'string': str,
-                                'array': list, 'object': dict, 'null': type(None)}
+JSON_TYPES = {
+    bool: 'boolean',
+    int: 'integer',
+    float: 'number',
+    str: 'string',
+    list: 'array',
+    dict: 'object',
+    type(None): 'null',
+}
+PYTHON_TYPES: dict[str, Any] = {
+    'boolean': bool,
+    'integer': int,
+    'number': (int, float),
+    'string': str,
+    'array': list,
+    'object': dict,
+    'null': type(None),
+}
 
 
 def _field_schema(declared: Any) -> dict[str, Any]:
@@ -1144,18 +1266,23 @@ def _reply_declaration_problems(step: AnyStep, reserved: tuple[str, ...]) -> lis
         if name in reserved:
             problems.append(f'step {step.name}: reply field {name!r} is set by the engine')
         if not isinstance(declared, dict) and (not isinstance(declared, type) or declared not in JSON_TYPES):
-            problems.append(f'step {step.name}: reply field {name!r} is {declared!r}, '
-                            f'neither a JSON type (bool, int, float, str, list, dict) nor a JSON Schema')
+            problems.append(
+                f'step {step.name}: reply field {name!r} is {declared!r}, '
+                f'neither a JSON type (bool, int, float, str, list, dict) nor a JSON Schema'
+            )
         elif isinstance(declared, dict):
             wanted = declared.get('type', [])
             names = [wanted] if isinstance(wanted, str) else wanted
             known = isinstance(names, list) and all(isinstance(t, str) and t in PYTHON_TYPES for t in names)
             if not known or ('type' in declared and (not names or len(set(names)) < len(names))):
-                problems.append(f'step {step.name}: reply field {name!r} has type {wanted!r}, '
-                                f'not a JSON type name or a list of different ones')
+                problems.append(
+                    f'step {step.name}: reply field {name!r} has type {wanted!r}, '
+                    f'not a JSON type name or a list of different ones'
+                )
             if _uses_refs(declared):
-                problems.append(f'step {step.name}: reply field {name!r} uses $ref or $defs; '
-                                f'a field\'s schema stands alone')
+                problems.append(
+                    f"step {step.name}: reply field {name!r} uses $ref or $defs; a field's schema stands alone"
+                )
     return problems
 
 
@@ -1178,8 +1305,10 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
     return {'anyOf': [schema, {'type': 'null'}]}
 
 
-SCHEMA_ABOUT = ('With status done, every field but reason is set and reason is null. '
-                'With failed or blocked, reason is one line and the other fields are null.')
+SCHEMA_ABOUT = (
+    'With status done, every field but reason is set and reason is null. '
+    'With failed or blocked, reason is one line and the other fields are null.'
+)
 
 
 def reply_schema(fields: dict[str, Any]) -> dict[str, Any]:
@@ -1188,11 +1317,18 @@ def reply_schema(fields: dict[str, Any]) -> dict[str, Any]:
     One closed object with every property required and the unused ones null: the form harnesses that hold a
     subagent to a schema accept. Which fields go with which status is in the description, and the engine checks it.
     """
-    properties = {'status': {'type': 'string', 'enum': list(REPLY_STATUSES)},
-                  'reason': {'type': ['string', 'null']},
-                  **{name: _nullable(_field_schema(d)) for name, d in fields.items()}}
-    return {'type': 'object', 'description': SCHEMA_ABOUT, 'properties': properties,
-            'required': list(properties), 'additionalProperties': False}
+    properties = {
+        'status': {'type': 'string', 'enum': list(REPLY_STATUSES)},
+        'reason': {'type': ['string', 'null']},
+        **{name: _nullable(_field_schema(d)) for name, d in fields.items()},
+    }
+    return {
+        'type': 'object',
+        'description': SCHEMA_ABOUT,
+        'properties': properties,
+        'required': list(properties),
+        'additionalProperties': False,
+    }
 
 
 def _parse_answer(raw: str, step: HumanStep) -> tuple[str | None, dict[str, Any]]:
