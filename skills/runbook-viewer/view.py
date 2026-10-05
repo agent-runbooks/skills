@@ -9,11 +9,15 @@ case the run whose state.json was modified last is shown.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 9):
+    sys.exit(f'view.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
+
 import argparse
 import json
 import os
 import re
-import sys
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

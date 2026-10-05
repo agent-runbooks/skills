@@ -4,7 +4,7 @@
 
 A skill gets copied as plain files into someone else's project and runs there with nothing installed. Everything it needs ships in its own folder:
 
-- Python code uses the standard library of Python 3.10 only; tests use `unittest`.
+- Python code uses the standard library of Python 3.9 only; tests use `unittest`.
 - The viewer page loads only files from `skills/runbook-viewer/`; its Content-Security-Policy blocks every other origin. `marked.umd.js` is an upstream release copied as is: to update it, replace the whole file with a newer release and refresh `marked-LICENSE.md`.
 
 ## Engine

@@ -2,6 +2,12 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.4.0
+
+No change is required in an existing `flow.py`.
+
+- Runs on Python 3.9, the `/usr/bin/python3` of macOS without Homebrew; until 1.4.0 it needed 3.10. On an older Python, importing the engine exits with a message that names the interpreter and its version.
+
 ## 1.3.0
 
 No change is required in an existing `flow.py`. A runbook that takes this engine also takes the new Execution rules from `references/template.md`.

@@ -25,7 +25,7 @@ The runbook adds no harness of its own. The orchestrating session launches the o
 
 ## Installation is a copy
 
-A runbook is a skill directory plus one Python file, and Python 3.10 is the whole dependency. It installs like any skill and runs in any harness that loads skills and can launch subagents, with its own subagent tool or through throng-mcp, headless runs such as `claude -p` or `codex exec` included.
+A runbook is a skill directory plus one Python file, and Python 3.9 is the whole dependency. It installs like any skill and runs in any harness that loads skills and can launch subagents, with its own subagent tool or through throng-mcp, headless runs such as `claude -p` or `codex exec` included.
 
 - **Claude Code workflow:** runs only in Claude Code.
 - **Copilot workflow:** runs only in Copilot.

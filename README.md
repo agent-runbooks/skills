@@ -68,7 +68,7 @@ The two skills here stand apart: a runbook needs neither to run, and prints the 
 
 ## Install
 
-You need Python 3.10 or newer, and a harness whose session can launch subagents and learn when they finish.
+You need Python 3.9 or newer, and a harness whose session can launch subagents and learn when they finish.
 
 Two ways in. The **Claude Code plugin** installs both skills as one managed bundle. The **[skills CLI](https://github.com/vercel-labs/skills)** copies the skill files into your project or home directory, for any agent, as files you own and can edit. Pick one, otherwise each skill shows up twice.
 

@@ -20,7 +20,7 @@ The page shows the same list on the left with the run's own files below it, `bri
 
 ## Usage
 
-Python 3.10 or later, standard library only. `<run>` is a run directory, or `.agent-runbooks/runs` for the latest run in it.
+Python 3.9 or later, standard library only. `<run>` is a run directory, or `.agent-runbooks/runs` for the latest run in it.
 
 ```bash
 python3 skills/runbook-viewer/view.py .agent-runbooks/runs --status

@@ -20,18 +20,26 @@ Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the fl
 """
 from __future__ import annotations
 
-__version__ = '1.3.0'
+__version__ = '1.4.0'
+
+import sys
+
+# Before the other imports, so an older Python stops here with a message and not on a missing name.
+if sys.version_info < (3, 9):
+    sys.exit(f'runbook.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
 
 import json
 import os
 import re
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any, NoReturn, TypeAlias
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from typing import TypeAlias  # 3.10+; annotations are never evaluated at run time
 
 
 # ---------- targets ----------
