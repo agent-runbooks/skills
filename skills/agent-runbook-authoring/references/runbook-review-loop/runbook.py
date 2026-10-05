@@ -755,11 +755,10 @@ class Renderer:
     def _launch(self, step: Step, section: Section) -> list[str]:
         inputs = self.state.inputs
         executor = section.executor
-        assert executor is not None
         headline = TEXT['launch'].format(
             label=section.label(),
             executor=executor,
-            spec=self.rb.executor_specs.get(executor, TEXT['missing_executor']),
+            spec=self.rb.executor_specs.get(executor or '', TEXT['missing_executor']),
         )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
@@ -1153,7 +1152,8 @@ class Runbook:
         """Run the command in argv (sys.argv by default); returns the exit code."""
         argv = sys.argv if argv is None else argv
         if len(argv) < 2 or argv[1] in ('-h', '--help'):
-            print((__doc__ or '').strip())
+            assert __doc__ is not None
+            print(__doc__.strip())
             return 1
         if argv[1] == '--check':
             problems = self.check()
