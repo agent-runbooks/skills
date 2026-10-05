@@ -229,7 +229,7 @@ def status_text(run: str, now: datetime) -> str:
 class Handler(BaseHTTPRequestHandler):
     """Serves the page, the library, /api/state and /api/file for the run in self.server.run."""
 
-    server: RunServer
+    server: RunServer  # pyright: ignore[reportIncompatibleVariableOverride]
 
     def log_message(self, format: str, *args: Any) -> None:
         pass

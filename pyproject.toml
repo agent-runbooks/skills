@@ -21,8 +21,14 @@ extend-exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
-# The engine and the viewer check the interpreter version on purpose: they run on whatever python3 the machine has.
-ignore = ["UP036"]
+# E501: the formatter owns line length; what it leaves long is string literals.
+# SIM117: a merged `with` this long needs parentheses, which Python 3.9 lacks.
+# UP036: the engine and the viewer check the interpreter version on purpose, they run on whatever python3 the machine has.
+ignore = ["E501", "SIM117", "UP036"]
+
+[tool.ruff.lint.per-file-ignores]
+# A flow.py names its next/skip helpers with lambdas, as flow-language.md teaches.
+"**/flow.py" = ["E731"]
 
 [tool.ruff.format]
 quote-style = "single"

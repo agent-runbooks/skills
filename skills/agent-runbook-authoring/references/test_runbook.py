@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable
+from typing import Any
 from unittest import mock
 
 import runbook
@@ -486,7 +487,7 @@ class ParallelTest(RunbookTestCase):
                 prompt='prompts/b.md',
                 reply={'findings': int},
                 next='join',
-                skip=lambda s: 'join' if s.done('left') and s.reply('left').findings == 0 else None,
+                skip=lambda s: 'join' if s.done('left') and s.reply('left').findings == 0 else None,  # pyright: ignore[reportOptionalMemberAccess]
             )
             rb.step('right', executor='light', prompt='prompts/c.md', next='join')
             rb.step('join', executor='main', prompt='prompts/d.md', after=('left', 'right'), next='fan')
@@ -1484,7 +1485,7 @@ class SkipTest(RunbookTestCase):
             prompt='prompts/b.md',
             after=('left',),
             reply={'kept': int},
-            skip=lambda s: 'last' if s.reply('left').findings == 0 else None,
+            skip=lambda s: 'last' if s.reply('left').findings == 0 else None,  # pyright: ignore[reportOptionalMemberAccess]
             next=lambda r, s: 'last' if r.kept == 0 else end('needs_attention'),
         )
         rb.step('last', executor='light', prompt='prompts/c.md', next=end('ready'))
@@ -1508,7 +1509,7 @@ class SkipTest(RunbookTestCase):
         self.assertEqual(self.first_line(out), 'launch step `last` as a new subagent, executor `light`: Light model')
 
     def test_reply_of_unfinished_step_is_none(self) -> None:
-        seen: list[object] = []
+        seen: list[tuple[Any, Any]] = []
 
         def declare(rb: Runbook) -> None:
             rb.start('a')
@@ -1530,7 +1531,7 @@ class SkipTest(RunbookTestCase):
     def test_check_rejects_a_non_callable_skip(self) -> None:
         def declare(rb: Runbook) -> None:
             rb.start('a')
-            rb.step('a', executor='light', prompt='prompts/a.md', skip='b', next=end('ready'))
+            rb.step('a', executor='light', prompt='prompts/a.md', skip='b', next=end('ready'))  # pyright: ignore[reportArgumentType]
 
         rb = self.runbook(declare)
         code, out = self.check(rb)

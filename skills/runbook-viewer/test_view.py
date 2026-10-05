@@ -97,15 +97,15 @@ class RunDirTestCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = os.path.realpath(tmp.name)
         self.runs = os.path.join(self.root, 'runs')
-        self.run = os.path.join(self.runs, 'synthetic')
-        os.makedirs(self.run)
+        self.run_dir = os.path.join(self.runs, 'synthetic')
+        os.makedirs(self.run_dir)
         self.write('state.json', json.dumps(SYNTHETIC))
         self.write('progress.md', PROGRESS)
         for name in ('brief.md', '00-preflight.md', '01-fix.md', '02-fix.md', '03-verify.md', 'changes.diff'):
             self.write(name, f'# {name}\n')
 
     def write(self, name: str, text: str, run: str | None = None) -> None:
-        with open(os.path.join(run or self.run, name), 'w', encoding='utf-8') as f:
+        with open(os.path.join(run or self.run_dir, name), 'w', encoding='utf-8') as f:
             f.write(text)
 
 
@@ -129,7 +129,7 @@ class StatusTest(RunDirTestCase):
 
     def test_synthetic_run(self) -> None:
         self.assertEqual(
-            view.status_text(self.run, NOW).splitlines(),
+            view.status_text(self.run_dir, NOW).splitlines(),
             [
                 'synthetic · runbook-task-cycle · waiting_for_human',
                 '✓ preflight   light      0:42  clean: true',
@@ -152,7 +152,7 @@ class StatusTest(RunDirTestCase):
 
 class FilesTest(RunDirTestCase):
     def test_section_files_and_log(self) -> None:
-        snap = view.snapshot(self.run, NOW)
+        snap = view.snapshot(self.run_dir, NOW)
         self.assertEqual(snap['now'], '2026-10-03T14:30:00Z')
         self.assertEqual(snap['state'], SYNTHETIC)
         self.assertEqual(
@@ -175,7 +175,7 @@ class FilesTest(RunDirTestCase):
             {
                 'name': 'state.json',
                 'size': len(json.dumps(SYNTHETIC)),
-                'mtime': os.path.getmtime(os.path.join(self.run, 'state.json')),
+                'mtime': os.path.getmtime(os.path.join(self.run_dir, 'state.json')),
             },
             snap['files'],
         )
@@ -191,30 +191,30 @@ class FilesTest(RunDirTestCase):
         self.write('state.json', json.dumps(SYNTHETIC), run=older)
         os.makedirs(os.path.join(self.runs, 'not-a-run'))
         os.utime(os.path.join(older, 'state.json'), (1_000_000_000, 1_000_000_000))
-        self.assertEqual(view.find_run(self.runs), self.run)
+        self.assertEqual(view.find_run(self.runs), self.run_dir)
         self.assertEqual(view.find_run(older), older)
         with self.assertRaises(view.RunError):
             view.find_run(self.root)
 
     def test_file_names_outside_the_run_are_refused(self) -> None:
         self.write('secret.txt', 'secret', run=self.root)
-        os.symlink(os.path.join(self.root, 'secret.txt'), os.path.join(self.run, 'link.md'))
-        os.makedirs(os.path.join(self.run, 'sub'))
-        self.assertEqual(view.run_file(self.run, 'brief.md'), os.path.join(self.run, 'brief.md'))
+        os.symlink(os.path.join(self.root, 'secret.txt'), os.path.join(self.run_dir, 'link.md'))
+        os.makedirs(os.path.join(self.run_dir, 'sub'))
+        self.assertEqual(view.run_file(self.run_dir, 'brief.md'), os.path.join(self.run_dir, 'brief.md'))
         for name in ('', '.', '..', '../secret.txt', '/etc/passwd', 'sub', 'sub/x', 'link.md', 'missing.md'):
             with self.subTest(name=name):
-                self.assertIsNone(view.run_file(self.run, name))
+                self.assertIsNone(view.run_file(self.run_dir, name))
 
     def test_half_written_state(self) -> None:
         self.write('state.json', json.dumps(SYNTHETIC)[:40])
         with self.assertRaises(view.StateUnreadable):
-            view.snapshot(self.run, NOW)
+            view.snapshot(self.run_dir, NOW)
 
 
 class ServerTest(RunDirTestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.server = view.RunServer(self.run)
+        self.server = view.RunServer(self.run_dir)
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)

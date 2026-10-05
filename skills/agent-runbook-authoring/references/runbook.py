@@ -645,7 +645,7 @@ class Renderer:
         self.files = RunFiles(rb.steps, run_dir, state)
 
     def _command(self, *args: str) -> str:
-        return ' '.join((self.rb.cmd, self.run_dir) + args)
+        return ' '.join((self.rb.cmd, self.run_dir, *args))
 
     @staticmethod
     def _labels(sections: list[Section]) -> str:
@@ -713,6 +713,7 @@ class Renderer:
 
     def _waiting_for_human(self, section: Section) -> str:
         step = self.rb.steps[section.name]
+        assert isinstance(step, HumanStep)
         choices = TEXT['choices'].format(choices=' | '.join(step.choices)) if step.choices else TEXT['free_text']
         if step.reply:
             choices += TEXT['fields'].format(fields=self._fields(step))
@@ -754,6 +755,7 @@ class Renderer:
     def _launch(self, step: Step, section: Section) -> list[str]:
         inputs = self.state.inputs
         executor = section.executor
+        assert executor is not None
         headline = TEXT['launch'].format(
             label=section.label(),
             executor=executor,
@@ -761,7 +763,7 @@ class Renderer:
         )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
-        lines = [headline, TEXT['message_open']] + self._message(step, section, inputs) + [TEXT['message_close']]
+        lines = [headline, TEXT['message_open'], *self._message(step, section, inputs), TEXT['message_close']]
         lines.append(TEXT['when_finishes'].format(command=self._command('reply', section.id, TEXT['reply_arg'])))
         return lines
 
@@ -1053,6 +1055,7 @@ class Runbook:
         if section.status is not Status.WAITING_FOR_HUMAN:
             die(f'section {sid} is {section.status.value}, not waiting_for_human')
         step = self.steps[section.name]
+        assert isinstance(step, HumanStep)
         fields: dict[str, Any] = {}
         if step.reply:
             picked, fields = _parse_answer(answer, step)
@@ -1102,11 +1105,12 @@ class Runbook:
 
     def _advance(self, run_dir: str, state: RunState) -> list[str]:
         """Replays the run, opens sections for what is to launch, and returns the lines to print."""
+        assert self.start_step is not None
         plan = Replay(self.steps, self.start_step, state).run()
         renderer = Renderer(self, run_dir, state)
         if self._correcting:
             correction = renderer.correction(*self._correcting)
-            return correction + [''] + self._next_lines(run_dir, state, plan, renderer)
+            return [*correction, '', *self._next_lines(run_dir, state, plan, renderer)]
         return self._next_lines(run_dir, state, plan, renderer)
 
     def _next_lines(self, run_dir: str, state: RunState, plan: Plan, renderer: Renderer) -> list[str]:
@@ -1149,7 +1153,7 @@ class Runbook:
         """Run the command in argv (sys.argv by default); returns the exit code."""
         argv = sys.argv if argv is None else argv
         if len(argv) < 2 or argv[1] in ('-h', '--help'):
-            print(__doc__.strip())
+            print((__doc__ or '').strip())
             return 1
         if argv[1] == '--check':
             problems = self.check()
@@ -1201,7 +1205,8 @@ def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
     # reply's null fields are dropped, so what is recorded is what was said.
     done = reply['status'] == Status.DONE.value
     reply = {k: v for k, v in reply.items() if v is not None or (done and k != 'reason')}
-    if not done and not (isinstance(reply.get('reason'), str) and reply['reason'].strip()):
+    reason = reply.get('reason')
+    if not done and not (isinstance(reason, str) and reason.strip()):
         reply['reason'] = NO_REASON
     return reply, None
 
@@ -1331,8 +1336,8 @@ def reply_schema(fields: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_answer(raw: str, step: HumanStep) -> tuple[str | None, dict[str, Any]]:
-    """The choice and the fields of an answer to a human step that declares reply fields."""
+def _parse_answer(raw: str, step: HumanStep) -> tuple[str, dict[str, Any]]:
+    """The choice ('' for a free-text step) and the fields of an answer to a human step that declares reply fields."""
     try:
         data = json.loads(raw)
     except ValueError:
@@ -1352,7 +1357,7 @@ def _parse_answer(raw: str, step: HumanStep) -> tuple[str | None, dict[str, Any]
             fields[name] = _field_schema(declared).get('default')
     if problems:
         die('answer: ' + '; '.join(problems))
-    return choice, fields
+    return (choice if step.choices else ''), fields
 
 
 COMMANDS: dict[str, Command] = {
