@@ -21,7 +21,7 @@ Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the fl
 
 from __future__ import annotations
 
-__version__ = '1.4.0'
+__version__ = '1.4.1'
 
 import sys
 
@@ -32,6 +32,7 @@ if sys.version_info < (3, 9):
 import json
 import os
 import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -441,32 +442,44 @@ class Replay:
     launched; an open section is waited for. A step with `after` waits until the latest sections of those
     steps are finished, and is visited again whenever another branch finishes. A step whose `skip` returns a
     target is not launched: the walk goes on to that target.
+
+    The walk is depth first on an explicit stack: a run of thousands of sections would overflow Python's recursion
+    limit, and every command replays the whole history.
     """
 
     def __init__(self, steps: dict[str, AnyStep], start: str, state: RunState) -> None:
         self._steps = steps
         self._start = start
         self._state = state
-        self._consumed: set[str] = set()
+        self._unconsumed: dict[str, deque[Section]] = {}
+        for section in state.sections:
+            if not section.superseded:
+                self._unconsumed.setdefault(section.name, deque()).append(section)
+        self._consumed = 0
+        # Sections consumed and joins made: a walk with no change in it repeats itself.
+        self._moves = 0
         self._latest: dict[str, Section] = {}
         self._history: dict[str, list[Section]] = {}
         self._pending_joins: set[str] = set()
         self._joined_on: dict[str, dict[str, str]] = {}
         self._take_stale: str | None = None
+        # What to visit, the top next: a step, the steps whose skip led to it, and self._moves when it was pushed.
+        # None visits the joins pending once everything above it is walked.
+        self._stack: list[tuple[str, tuple[str, ...], int] | None] = []
         self._plan = Plan()
 
     def run(self) -> Plan:
-        self._visit(self._start)
+        self._walk(self._start)
         # Nothing else can bring a join a new section of a step it already joined on: it takes the one it has.
         # The permission is for that one join, not for what the walk reaches after it.
         stuck: set[str] = set()
         while self._plan.idle and not self._plan.ending and self._pending_joins - stuck:
             join = min(self._pending_joins - stuck)
-            consumed = len(self._consumed)
+            consumed = self._consumed
             self._take_stale = join
-            self._visit(join)
+            self._walk(join)
             self._take_stale = None
-            stuck = stuck | {join} if len(self._consumed) == consumed else set()
+            stuck = stuck | {join} if self._consumed == consumed else set()
         if self._plan.ending:
             # A branch cut off by the ending may still have an executor at work: the run ends once it reports.
             seen = {s.id for s in self._plan.waiting}
@@ -475,25 +488,39 @@ class Replay:
             ]
         return self._plan
 
-    def _visit(self, name: str) -> None:
-        if self._plan.ending:
-            return
+    def _walk(self, name: str) -> None:
+        self._stack = [(name, (), self._moves)]
+        while self._stack and not self._plan.ending:
+            item = self._stack.pop()
+            if item is None:
+                self._stack += [(j, (), self._moves) for j in sorted(self._pending_joins, reverse=True)]
+            else:
+                self._visit(*item)
+
+    def _visit(self, name: str, skipped: tuple[str, ...], moves: int) -> None:
+        """skipped: the steps whose skip led here; moves: self._moves then. A move since breaks the circle."""
         if name not in self._steps:
             die(f'step {name!r} is not declared')
         step = self._steps[name]
         if not self._joined(step):
             return
+        if moves != self._moves:
+            skipped = ()
         if isinstance(step, Step) and step.skip is not None:
+            if name in skipped:
+                circle = ' -> '.join(f'`{s}`' for s in (*skipped[skipped.index(name) :], name))
+                die(f'`skip` goes round in a circle with nothing to launch: {circle}')
             target = _resolve(step.skip, f'`skip` of step `{name}`', self._state_now())
             if target is not None:
-                self._go(target, f'`{name}` skipped')
+                self._go(target, f'`{name}` skipped', (*skipped, name))
                 return
         section = self._next_section(name)
         if section is None:
             if name not in self._plan.launch:
                 self._plan.launch.append(name)
             return
-        self._consumed.add(section.id)
+        self._consumed += 1
+        self._moves += 1
         self._latest[name] = section
         if section.status is Status.RUNNING:
             self._plan.waiting.append(section)
@@ -530,13 +557,12 @@ class Replay:
         self._pending_joins.discard(step.name)
         if step.after:
             self._joined_on[step.name] = {dep: self._latest[dep].id for dep in step.after}
+            self._moves += 1
         return True
 
     def _next_section(self, name: str) -> Section | None:
-        for section in self._state.sections:
-            if section.name == name and section.id not in self._consumed and not section.superseded:
-                return section
-        return None
+        queue = self._unconsumed.get(name)
+        return queue.popleft() if queue else None
 
     def _route(self, step: AnyStep, section: Section) -> None:
         target = self._target(step, section)
@@ -548,15 +574,13 @@ class Replay:
             return
         self._go(target, f'after step `{section.id}`')
 
-    def _go(self, target: str | End | Parallel, why: str) -> None:
+    def _go(self, target: str | End | Parallel, why: str, skipped: tuple[str, ...] = ()) -> None:
         if isinstance(target, End):
             self._plan.ending = Ending(target, why)
             return
         targets = target.steps if isinstance(target, Parallel) else (target,)
-        for t in targets:
-            self._visit(t)
-        for j in sorted(self._pending_joins):
-            self._visit(j)
+        self._stack.append(None)
+        self._stack += [(t, skipped, self._moves) for t in reversed(targets)]
 
     def _state_now(self) -> State:
         return State(self._state.inputs, self._plan.done_count, self._latest, self._history, self._plan.failed_count)

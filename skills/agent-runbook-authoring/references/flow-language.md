@@ -112,7 +112,7 @@ A step an executor runs. The name is its id: in `next`, in `after`, in `s.done`,
 - `on_failure`: the same, for `failed` and `blocked` replies. Without it they end the run as `failed`, and the human is pointed at `progress.md`. A loop through it takes its budget from `s.failed(name)`: `on_failure=lambda r, s: 'checks' if s.failed('checks') < 2 else end('failed', …)`.
 - `after`: step names whose latest sections must all be `done` before this one launches. Use it on the step that follows a `parallel(...)`. If one of them is not `done`, the run ends `failed`.
 - `side_effects`: what the step does outside the tree and `<run>`: `'commit'`, `'PR comment'`. Such a step is never relaunched by the orchestrator alone. On a reply that is not `done`, `flow.py` asks for the human's yes first.
-- `skip`: a function `(s) -> target or None`, called when the step is reached and its `after` is satisfied. A target means the step is not launched and the run goes there instead: triage has nothing to do when both reviews report `findings == 0`. Its file is then absent for the steps after it, and their prompts say what to do without it.
+- `skip`: a function `(s) -> target or None`, called when the step is reached and its `after` is satisfied. A target means the step is not launched and the run goes there instead: triage has nothing to do when both reviews report `findings == 0`. Its file is then absent for the steps after it, and their prompts say what to do without it. A `skip` that leads back to its own step with no section recorded and no join made on the way would go round forever: it stops the command with an error.
 - `writes`: names of the files the step writes, `['checks.md']`. Each launch writes its own file, `<run>/<NN>-checks.md`, `NN` being the launch's place in the run: `02-checks.md`, then `04-checks.md` after a fix. Nothing is overwritten, and the run directory lists in the order things happened. The launch message gives the path as `write checks.md: <path>`.
 - `reads`: names of the files the step reads. Another step's output is passed as the latest `done` launch's file, `read checks.md: <path>`, or as absent when none has written it yet; a step that reads its own name gets its previous pass. A name no step writes is an input file under `<run>` and is passed as it is. `'working tree'` is not passed; it is there for the reader of `flow.py`.
 
@@ -143,6 +143,8 @@ A question to the human. No executor. `flow.py` prints the question with `<run>`
 `s.replies(name)` is the same for every `done` section of that step reached so far, oldest first, and an empty list before the first. A budget the human can extend sums over it: `s.done('fix') < s.inputs.maxFixRounds + sum(a.rounds for a in s.replies('ask-rounds'))`.
 
 Every input the run needs in a condition is passed at `start`, defaults included.
+
+Every command replays the run from its first section and calls the functions again, so a `next`, `on_failure` or `skip` function answers from its arguments alone. A counter of its own, the clock or a file it reads gives another answer on the next replay, and the replay goes another way than the run went.
 
 ## Files of a run
 

@@ -1043,6 +1043,33 @@ class LoopTest(RunbookTestCase):
             [s['id'] for s in self.state()['sections']], ['fix', 'verify', 'fix-2', 'verify-2', 'fix-3', 'verify-3']
         )
 
+    def test_a_loop_of_thousands_of_sections_replays_to_its_end(self) -> None:
+        rounds = 5000
+
+        def declare(rb: Runbook) -> None:
+            rb.start('work')
+            rb.step(
+                'work',
+                executor='main',
+                prompt='prompts/a.md',
+                next=lambda r, s: 'work' if s.done('work') < rounds else end('ready'),
+            )
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        state = self.state()
+        first = state['sections'][0]
+        done = {**first, 'status': 'done', 'reply': {'status': 'done'}}
+        state['sections'] = (
+            [{**done, 'id': 'work'}]
+            + [{**done, 'id': f'work-{i}'} for i in range(2, rounds)]
+            + [{**first, 'id': f'work-{rounds}'}]
+        )
+        with open(os.path.join(self.run_dir, 'state.json'), 'w') as f:
+            json.dump(state, f)
+        self.assertEqual(self.first_line(self.call(rb)), f'still running: `work-{rounds}`')
+        self.assertIn(f'end: ready (after step `work-{rounds}`)', self.reply(rb, f'work-{rounds}'))
+
 
 class RelaunchTest(RunbookTestCase):
     def test_interrupted_opens_a_new_section(self) -> None:
@@ -1527,6 +1554,35 @@ class SkipTest(RunbookTestCase):
         self.reply(rb, 'a')
         self.assertEqual(seen[0][0].status, 'done')
         self.assertIsNone(seen[0][1])
+
+    def test_skips_that_go_round_in_a_circle_stop_the_command(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('a')
+            rb.step('a', executor='light', prompt='prompts/a.md', skip=lambda s: parallel('b', 'c'), next=end('ready'))
+            rb.step('b', executor='light', prompt='prompts/b.md', next=end('ready'))
+            rb.step('c', executor='light', prompt='prompts/c.md', skip=lambda s: 'a', next=end('ready'))
+
+        rb = self.runbook(declare)
+        self.run_dir = self.run_dir + '-circle'
+        err = self.fails(rb, 'start', json.dumps({'repo': '/repo'}))
+        self.assertIn('`skip` goes round in a circle with nothing to launch: `a` -> `c` -> `a`', err)
+
+    def test_a_skip_back_through_a_join_made_on_the_way_is_not_a_circle(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('x')
+            rb.step('x', executor='light', prompt='prompts/a.md', next='a')
+            rb.step(
+                'a', executor='light', prompt='prompts/b.md', skip=lambda s: parallel('work', 'c'), next=end('ready')
+            )
+            rb.step('c', executor='light', prompt='prompts/c.md', after=('x',), skip=lambda s: 'a', next=end('ready'))
+            rb.step('work', executor='light', prompt='prompts/d.md', next=end('ready'))
+
+        rb = self.runbook(declare)
+        self.run_dir = self.run_dir + '-join'
+        self.start(rb)
+        self.assertEqual(
+            self.first_line(self.reply(rb, 'x')), 'launch step `work` as a new subagent, executor `light`: Light model'
+        )
 
     def test_check_rejects_a_non_callable_skip(self) -> None:
         def declare(rb: Runbook) -> None:

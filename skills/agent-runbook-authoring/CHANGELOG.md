@@ -2,6 +2,13 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.4.1
+
+No change is required in an existing `flow.py`.
+
+- Fixed: a run past about 330 sections in a row of one loop could not be replayed, and every command replays the whole history. The command failed with `` `next` of step `<name>` raised RecursionError `` and called it a defect in `flow.py`. The replay walks the flow on its own stack now, and indexes the sections by step: a replay of 20,000 sections takes about 30 ms, where 5,000 took 260 ms before.
+- A `skip` that leads back to its own step with no section recorded and no join made on the way, as `a` skipping to `b` and `b` back to `a`, would go round forever. It stops the command: ``flow.py: `skip` goes round in a circle with nothing to launch: `a` -> `b` -> `a` ``. Until 1.4.1 it ended in the same RecursionError. The check relies on what `references/flow-language.md` now says outright: a flow function answers from its arguments alone, since every command calls it again.
+
 ## 1.4.0
 
 No change is required in an existing `flow.py`.
