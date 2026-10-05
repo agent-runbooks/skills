@@ -13,5 +13,5 @@ For the orchestrator of a runbook. After every `reply` and `answer` command, and
 
 ## When the human asks
 
-- For the page: start `python3 <viewer>/view.py <run>` as a background process that outlives the turn, give the human the URL it prints as its first line, and open it in the harness's own browser pane if there is one. Without a run named, pass the runs directory, `.agent-runbooks/runs` under the directory the session started in: the viewer takes the run modified last. The server runs until the human says to stop it or the session ends.
+- For the page: start `python3 <viewer>/view.py <run>` as a background process that outlives the turn, give the human the URL it prints as its first line, and open it in the harness's own browser pane if there is one. Without a run named, pass the runs directory, `.agent-runbooks/runs` under the directory the session started in: the viewer takes the run modified last. The server runs until the human says to stop it, the session ends, or no page has been open for 30 minutes; if the human asks for the page after that, start it again.
 - For the status only: run `python3 <viewer>/view.py <run> --status`, with the runs directory in place of `<run>` when no run is named, and show its output in a code block.

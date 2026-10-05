@@ -2,7 +2,8 @@
 """Shows a runbook run: a text status, or a page on localhost. Reads the run directory and never writes to it.
 
     view.py <run> --status       print the text status
-    view.py <run> [--port N]     serve the page on 127.0.0.1 until interrupted
+    view.py <run> [--port N] [--idle-minutes N]
+                                 serve the page on 127.0.0.1 until interrupted or idle
 
 <run> is a run directory, the one holding state.json, or a directory of runs such as .agent-runbooks/runs, in which
 case the run whose state.json was modified last is shown.
@@ -18,6 +19,8 @@ import argparse
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +41,8 @@ STATIC = {'/': ('page.html', 'text/html; charset=utf-8'),
 # no javascript: links, nothing loaded from or sent to other origins.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; "
        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+# Browsers slow the page's polling in a background tab to about once a minute: well under this.
+IDLE_MINUTES = 30
 
 
 class RunError(Exception):
@@ -209,6 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
+        self.server.last_request = time.monotonic()
         url = urlsplit(self.path)
         port = self.server.server_address[1]
         # A foreign Host is a page on another site that rebound its domain to 127.0.0.1 to read the run.
@@ -254,6 +260,20 @@ class RunServer(ThreadingHTTPServer):
     def __init__(self, run: str, port: int = 0) -> None:
         super().__init__(('127.0.0.1', port), Handler)
         self.run = run
+        self.last_request = time.monotonic()
+
+    def serve_until_idle(self, seconds: float) -> None:
+        """Serves until no request has come for the given seconds; an open page polls, so this is the page closed."""
+        threading.Thread(target=self._shutdown_when_idle, args=(seconds,), daemon=True).start()
+        self.serve_forever()
+
+    def _shutdown_when_idle(self, seconds: float) -> None:
+        while True:
+            left = self.last_request + seconds - time.monotonic()
+            if left <= 0:
+                self.shutdown()
+                return
+            time.sleep(left)
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         if not isinstance(sys.exc_info()[1], ConnectionError):
@@ -272,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('run', help='a run directory, or a directory of runs')
     parser.add_argument('--status', action='store_true', help='print the text status and exit')
     parser.add_argument('--port', type=int, default=0, help='port to serve on, a free one by default')
+    parser.add_argument('--idle-minutes', type=float, default=IDLE_MINUTES,
+                        help=f'stop after this many minutes without a request, {IDLE_MINUTES} by default; 0 never stops')
     args = parser.parse_args(argv)
     try:
         run = find_run(args.run)
@@ -288,7 +310,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(server.url, flush=True)
     try:
-        server.serve_forever()
+        if args.idle_minutes > 0:
+            server.serve_until_idle(args.idle_minutes * 60)
+            print(f'view.py: no requests for {args.idle_minutes:g} minutes, stopped', file=sys.stderr)
+        else:
+            server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

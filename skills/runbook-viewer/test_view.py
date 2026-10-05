@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -207,6 +208,22 @@ class ServerTest(RunDirTestCase):
         for host in (f'evil.example:{port}', '127.0.0.1', f'127.0.0.1:{port + 1}'):
             with self.subTest(host=host):
                 self.assertEqual(self.get('/api/state', {'Host': host})[0], 403)
+
+
+class IdleTest(unittest.TestCase):
+    def test_stops_after_no_requests(self) -> None:
+        server = view.RunServer(tempfile.gettempdir())
+        self.addCleanup(server.server_close)
+        thread = threading.Thread(target=server.serve_until_idle, args=(0.3,), daemon=True)
+        thread.start()
+        for _ in range(3):
+            time.sleep(0.2)
+            with urllib.request.urlopen(server.url + 'page.js'):
+                pass
+        thread.join(0.1)
+        self.assertTrue(thread.is_alive())
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == '__main__':

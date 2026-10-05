@@ -27,7 +27,7 @@ python3 skills/runbook-viewer/view.py .agent-runbooks/runs --status
 python3 skills/runbook-viewer/view.py .agent-runbooks/runs/20261003-add-version-constant
 ```
 
-The second prints a `http://127.0.0.1:<port>/` URL and serves until Ctrl-C; `--port N` fixes the port. In a session, ask for it: "show me the run", "status of the run". A runbook whose Execution rules mention the viewer prints the status by itself when this skill is installed; the runbooks in this repository do.
+The second prints a `http://127.0.0.1:<port>/` URL and serves until Ctrl-C, or until 30 minutes pass without a request, that is with the page closed; `--idle-minutes N` changes that, 0 serves until Ctrl-C. `--port N` fixes the port. In a session, ask for it: "show me the run", "status of the run". A runbook whose Execution rules mention the viewer prints the status by itself when this skill is installed; the runbooks in this repository do.
 
 ## Contents
 
