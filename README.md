@@ -2,7 +2,7 @@
 
 [![skills.sh](https://skills.sh/b/agent-runbooks/skills)](https://skills.sh/agent-runbooks/skills/agent-runbook-authoring)
 
-A **runbook** lets you give an agent session a procedure to run step by step through subagents. It is an ordinary [Agent Skill](https://agentskills.io) with prompts and a flow you can read and edit. Code determines what comes next, while the session handles how to carry out each step.
+A **runbook** lets you give an agent session a procedure to run step by step through subagents. It is an ordinary [Agent Skill](https://agentskills.io) with prompts and a flow you can read and edit, written once for a procedure that repeats and installed like any skill. Code determines what comes next, while the session handles how to carry out each step.
 
 ## How it works
 
@@ -45,12 +45,13 @@ Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows)
 
 | | Runbook | Claude Code workflow | Copilot dynamic workflow | Code orchestrator |
 |---|---|---|---|---|
-| Branching | computed by `flow.py` | computed by the script | computed by the script | computed by the code, or handed to a model |
-| Executors | coding harnesses, any vendor, mixed | Claude subagents | Copilot subagents | models through SDKs, coding harnesses through adapters |
+| Written | ahead of time, as a skill, for a procedure that repeats | by the agent in the session, for the task at hand; a script can be saved | by the agent in the session, for the task at hand | ahead of time, as an application |
+| Reading | prompt files and a step list | JavaScript | JavaScript | an application |
 | Install | install the skill | a script in `.claude/workflows/` or a plugin | a Copilot extension or plugin | an application to build and deploy |
 | Runs in | any harness that loads skills and launches subagents, its own or through throng-mcp | Claude Code: CLI, Desktop, IDE, `claude -p`, Agent SDK | Copilot CLI, the Copilot app, the Copilot SDK | wherever you deploy it |
-| Reading | prompt files and a step list | JavaScript | JavaScript | an application |
-| How a step is done | the orchestrator's call | the script's | the script's | the code's |
+| Executors | coding harnesses, any vendor, mixed | Claude subagents | Copilot subagents | models through SDKs, coding harnesses through adapters |
+| Branching | computed by `flow.py` | computed by the script | computed by the script | computed by the code, or handed to a model |
+| How a step is done | left to the orchestrating model | fixed in the script | fixed in the script | fixed in the code |
 | Talking to the human | a question in the session, any time | none mid-run; pause or stop from `/workflows` | checkpoints and questions the script declares | an interrupt in code; a UI from the framework or yours |
 | Resume | in any session, from `state.json` | in the same session | from the steps the script journaled | from a checkpointer or storage you configure |
 
@@ -114,6 +115,8 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 </details>
 
 ## Write your own
+
+A runbook pays off for a procedure that repeats: three or more steps, several executors, run again and again. A task that happens once is a prompt or a workflow script, not a runbook.
 
 Ask the session for a runbook, and [agent-runbook-authoring](skills/agent-runbook-authoring) writes it with you: the prompts, `flow.py`, the execution rules, and a cold read by a fresh subagent that has not seen the skill. A complete sample to read first is [runbook-review-loop](skills/agent-runbook-authoring/references/runbook-review-loop): a coder and a reviewer in a loop with a human step, on the harness's own subagents, so a copy of it in a skills directory runs as it is.
 

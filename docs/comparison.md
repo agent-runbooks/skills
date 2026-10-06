@@ -4,14 +4,37 @@ A runbook has two kinds of relatives. [Claude Code workflows](https://code.claud
 
 | | Runbook | Claude Code workflow | Copilot dynamic workflow | Code orchestrator |
 |---|---|---|---|---|
-| Branching | computed by `flow.py` | computed by the script | computed by the script | computed by the code, or handed to a model |
-| Executors | coding harnesses, any vendor, mixed | Claude subagents | Copilot subagents | models through SDKs, coding harnesses through adapters |
+| Written | ahead of time, as a skill, for a procedure that repeats | by the agent in the session, for the task at hand; a script can be saved | by the agent in the session, for the task at hand | ahead of time, as an application |
+| Reading | prompt files and a step list | JavaScript | JavaScript | an application |
 | Install | install the skill | a script in `.claude/workflows/` or a plugin | a Copilot extension or plugin | an application to build and deploy |
 | Runs in | any harness that loads skills and launches subagents, its own or through throng-mcp | Claude Code: CLI, Desktop, IDE, `claude -p`, Agent SDK | Copilot CLI, the Copilot app, the Copilot SDK | wherever you deploy it |
-| Reading | prompt files and a step list | JavaScript | JavaScript | an application |
-| How a step is done | the orchestrator's call | the script's | the script's | the code's |
+| Executors | coding harnesses, any vendor, mixed | Claude subagents | Copilot subagents | models through SDKs, coding harnesses through adapters |
+| Branching | computed by `flow.py` | computed by the script | computed by the script | computed by the code, or handed to a model |
+| How a step is done | left to the orchestrating model | fixed in the script | fixed in the script | fixed in the code |
 | Talking to the human | a question in the session, any time | none mid-run; pause or stop from `/workflows` | checkpoints and questions the script declares | an interrupt in code; a UI from the framework or yours |
 | Resume | in any session, from `state.json` | in the same session | from the steps the script journaled | from a checkpointer or storage you configure |
+
+## Written once, run many times
+
+A runbook is written ahead of time, for a procedure that will come up again: the prompts, the flow, the execution rules, a cold read by a subagent that has not seen it. Then it is a skill in a directory, and every run after is `start` with the inputs. Nothing stops an agent from writing one in a session for the job in front of it, but the authoring costs more than one job returns.
+
+- **Claude Code workflow:** the agent writes the script in the session, for the task at hand, and the Workflow tool runs it; a script worth keeping goes into `.claude/workflows/`.
+- **Copilot workflow:** the agent writes the script in the session, from the request. That is what "dynamic" means.
+- **Code orchestrators** are applications: written ahead of time, like a runbook, and deployed.
+
+## You can read it
+
+The steps are prompt files, the flow is a step per line with its branches next to it. A reviewer reads the prompts as prompts and the flow as a list. The cold read in [`review-checklist.md`](../skills/agent-runbook-authoring/references/review-checklist.md) checks that a model reads it the same way.
+
+In a workflow script or an orchestrator app the prompts are strings inside the code, and the control flow is the code. Reviewing one is reading a program.
+
+## Installation is a copy
+
+A runbook is a skill directory plus one Python file, and Python 3.9 is the whole dependency. It installs like any skill and runs in any harness that loads skills and can launch subagents, with its own subagent tool or through throng-mcp, headless runs such as `claude -p` or `codex exec` included.
+
+- **Claude Code workflow:** runs only in Claude Code.
+- **Copilot workflow:** runs only in Copilot.
+- **Code orchestrator:** needs a runtime, packages, credentials and a place to run, and the harness you work in is not that place. In exchange it runs wherever you deploy it, a server or CI included.
 
 ## Executors are harnesses
 
@@ -22,20 +45,6 @@ The runbook adds no harness of its own. The orchestrating session launches the o
 - **Claude Code workflow:** every agent is a Claude session.
 - **Copilot workflow:** every agent is a Copilot agent, with a model picked per call.
 - **Code orchestrators** reach harnesses through adapters. Mastra runs Claude Code, Codex or OpenCode as subagents over ACP, the Agents SDK has a Codex tool, LangGraph's docs wrap the Claude Agent SDK in a task. The harness becomes a component of an application you build.
-
-## Installation is a copy
-
-A runbook is a skill directory plus one Python file, and Python 3.9 is the whole dependency. It installs like any skill and runs in any harness that loads skills and can launch subagents, with its own subagent tool or through throng-mcp, headless runs such as `claude -p` or `codex exec` included.
-
-- **Claude Code workflow:** runs only in Claude Code.
-- **Copilot workflow:** runs only in Copilot.
-- **Code orchestrator:** needs a runtime, packages, credentials and a place to run, and the harness you work in is not that place. In exchange it runs wherever you deploy it, a server or CI included.
-
-## You can read it
-
-The steps are prompt files, the flow is a step per line with its branches next to it. A reviewer reads the prompts as prompts and the flow as a list. The cold read in [`review-checklist.md`](../skills/agent-runbook-authoring/references/review-checklist.md) checks that a model reads it the same way.
-
-In a workflow script or an orchestrator app the prompts are strings inside the code, and the control flow is the code. Reviewing one is reading a program.
 
 ## The orchestrator keeps its judgement
 
@@ -61,6 +70,7 @@ The run is a conversation in the session the human already has open. A human ste
 
 ## Where a script fits better
 
+- **One-off jobs.** A script is written for the task in front of the agent and run once. A runbook for a single job costs more to write than the job returns, see [Written once, run many times](#written-once-run-many-times).
 - **Mass jobs.** A typical procedure, a dozen steps with a review loop and a human step, fits the flow language with room to spare: it branches on a few typed fields of a reply, loops within a budget and joins parallel steps with `after`. A job like porting a whole project to another language, hundreds of agents over hundreds of files, is where a script earns its keep: a Claude Code workflow fans out over up to 1,000 agents a run and loops on anything JavaScript can test.
 - **Spending limits.** A Copilot workflow caps a run by subagents, time and AI credits. A runbook has none.
 - **Guarantees.** A script enforces its rules; in a runbook they hold as far as the model follows them, see [Limits](../README.md#compatibility-and-limits). Current models follow them well.
