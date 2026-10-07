@@ -104,6 +104,10 @@ The step a run begins with. Required: `--check` fails without it.
 
 A step an executor runs. The name is its id: in `next`, in `after`, in `s.done`, in the launch messages and in `state.json`. A step that runs again gets a counter: `fix`, `fix-2`, `fix-3`.
 
+Step names are unique across `rb.step` and `rb.human`. A name cannot be another declared step's name followed by `-<digits>`, because that would collide with section counters. The rule applies in either declaration order. Duplicate or colliding names raise `ValueError` at declaration.
+
+Collection parameters `inputs`, `reads`, `writes`, `after` and `choices` take iterables, such as lists or tuples. A lone string raises `TypeError` naming the step and parameter. `rb.human(writes=...)` takes one file name as a string.
+
 - `executor`: a name declared with `rb.executor`, or a function `(s) -> name`.
 - `prompt`: the step's prompt file, relative to the runbook directory.
 - `inputs`: what the launch message carries beyond `repo`, `run` and the files. A string is the name of a run input, passed with its value. A `(key, value)` pair is passed as it is.
@@ -155,7 +159,11 @@ Every command replays the run from its first section and calls the functions aga
 
 ## Checking
 
-`python3 flow.py --check` from the runbook directory: a start step is set and declared, `repo` is an input, every executor name and every `inputs` name is declared, every prompt file exists, every `after` and every literal target is declared, `skip` is a function, every `reply` field is a type or a schema and none takes a name the engine sets (`status`, `reason`, `choice`), every human step has a question, `prompts/common.md` exists. Conditions are Python; a wrong field name fails at run time with the reply that caused it. The engine then names the function that raised and has the reply recorded, so after `flow.py` is fixed, `flow.py <run>` goes on from there. Walk the Flow by hand before the first run all the same:
+`python3 flow.py --check` from the runbook directory: a start step is set and declared, `repo` is an input, every executor name and every `inputs` name is declared, every prompt file exists, every `after` and every literal target is declared, `skip` is a function, every `reply` field is a type or a schema and none takes a name the engine sets (`status`, `reason`, `choice`), every human step has a question, `prompts/common.md` exists. Conditions are Python; a wrong field name fails at run time with the reply that caused it. The engine then names the function that raised and has the reply recorded, so after `flow.py` is fixed, `flow.py <run>` goes on from there.
+
+During a run, change `flow.py` only to fix a defect the engine reported. Keep transitions the run already took unchanged. Replay recomputes them from the recorded replies with the current `flow.py`. Changing one sends the run down the new branch and leaves the old branch running.
+
+Walk the Flow by hand before the first run all the same:
 
 ```
 python3 flow.py /tmp/try start '{"ticket": "T", "brief": "b", "repo": "/tmp/x", "package": "p"}'

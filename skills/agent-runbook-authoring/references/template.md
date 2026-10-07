@@ -147,4 +147,5 @@ The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine w
 - A prompt shared by two steps takes its differences as `inputs` (`('id-prefix', 'b')`) and `writes` (`review-b.md`).
 - A step that earlier replies can make pointless gets `skip`, and the prompts of the steps after it say what to do when its file is absent. Skipping is cheaper than launching an executor to report that there is nothing to do.
 - Step names are the names of their outputs where possible: step `checks` writes `checks.md`. The run directory then reads as the run: `00-preflight.md`, `01-implement.md`, `02-checks.md`, `03-fix-checks.md`, `04-checks.md`.
+- Keep step names unique across executor and human steps. Reserve `<step>-<digits>` for that step's section counters. Collection parameters take lists, tuples or other iterables, never a lone string. `rb.human(writes=...)` takes one file name.
 - A smoke input that takes the shortest path proves the launch, not the flow. Add a second one that reaches the loops and the human steps before the runbook is trusted with real work.

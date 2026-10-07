@@ -21,7 +21,7 @@ Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the fl
 
 from __future__ import annotations
 
-__version__ = '1.4.1'
+__version__ = '1.4.2'
 
 import sys
 
@@ -32,8 +32,9 @@ if sys.version_info < (3, 9):
 import json
 import os
 import re
+import shlex
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -253,9 +254,6 @@ class Section:
     def reason(self) -> str:
         return (self.reply or {}).get('reason', '')
 
-    def label(self) -> str:
-        return self.id
-
     def fields(self) -> dict[str, Any]:
         """What `next` and `s.reply` see: the reply, and for an answered human step its choice as `choice`."""
         answered = {'choice': self.note} if self.answer is not None else {}
@@ -328,8 +326,11 @@ class RunState:
         data = dict(
             runbook=self.runbook, status=self.status, inputs=self.inputs, sections=[s.to_json() for s in self.sections]
         )
-        with open(self.path(run_dir), 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        path = self.path(run_dir)
+        with open(path + '.tmp', 'w', encoding='utf-8') as f:
+            f.write(text)
+        os.replace(path + '.tmp', path)
 
     def section(self, sid: str) -> Section:
         for section in self.sections:
@@ -668,12 +669,13 @@ class Renderer:
         self.state = state
         self.files = RunFiles(rb.steps, run_dir, state)
 
-    def _command(self, *args: str) -> str:
-        return ' '.join((self.rb.cmd, self.run_dir, *args))
+    def _command(self, *args: str, placeholder: str = '') -> str:
+        command = ' '.join((self.rb.cmd, shlex.quote(self.run_dir), *(shlex.quote(arg) for arg in args)))
+        return f'{command} {placeholder}' if placeholder else command
 
     @staticmethod
     def _labels(sections: list[Section]) -> str:
-        return ', '.join(f'`{s.label()}`' for s in sections)
+        return ', '.join(f'`{s.id}`' for s in sections)
 
     def wait_for_end(self, ending: Ending, waiting: list[Section]) -> list[str]:
         labels = self._labels(waiting)
@@ -683,12 +685,14 @@ class Renderer:
         """What the orchestrator sends the executor whose reply did not pass the check."""
         body = TEXT['message_correct'].format(problem=problem, schema=self.files.schema_path(section.name))
         return [
-            TEXT['correct'].format(label=section.label(), problem=problem),
+            TEXT['correct'].format(label=section.id, problem=problem),
             TEXT['message_open'],
             body,
             TEXT['message_close'],
-            TEXT['correct_then'].format(command=self._command('reply', section.id, TEXT['reply_arg'])),
-            TEXT['correct_cannot'].format(command=self._command('reply', section.id, TEXT['uncorrectable_reply'])),
+            TEXT['correct_then'].format(command=self._command('reply', section.id, placeholder=TEXT['reply_arg'])),
+            TEXT['correct_cannot'].format(
+                command=self._command('reply', section.id, placeholder=TEXT['uncorrectable_reply'])
+            ),
         ]
 
     def ended(self, ending: Ending) -> list[str]:
@@ -728,11 +732,11 @@ class Renderer:
     def _side_effect_failure(self, section: Section) -> str:
         reason = TEXT['reason'].format(reason=section.reason) if section.reason else ''
         return TEXT['side_effect_failure'].format(
-            label=section.label(),
+            label=section.id,
             status=section.status.value,
             reason=reason,
             relaunch=self._command('relaunch', section.id),
-            log=self._command('log', TEXT['log_arg']),
+            log=self._command('log', placeholder=TEXT['log_arg']),
         )
 
     def _waiting_for_human(self, section: Section) -> str:
@@ -742,7 +746,7 @@ class Renderer:
         if step.reply:
             choices += TEXT['fields'].format(fields=self._fields(step))
         return TEXT['waiting_for_human'].format(
-            label=section.label(), choices=choices, command=self._answer_command(step, section)
+            label=section.id, choices=choices, command=self._answer_command(step, section)
         )
 
     def _answer_command(self, step: HumanStep, section: Section) -> str:
@@ -752,7 +756,7 @@ class Renderer:
                 TEXT['answer_json_field'].format(name=name) for name in step.reply
             ]
             arg = TEXT['answer_json_arg'].format(keys=', '.join(keys))
-        return self._command('answer', section.id, arg)
+        return self._command('answer', section.id, placeholder=arg)
 
     @staticmethod
     def _fields(step: HumanStep) -> str:
@@ -766,7 +770,7 @@ class Renderer:
         return '; '.join(parts)
 
     def _ask(self, step: HumanStep, section: Section) -> list[str]:
-        lines = [TEXT['ask'].format(label=section.label(), question=self.files.substitute(step.question))]
+        lines = [TEXT['ask'].format(label=section.id, question=self.files.substitute(step.question))]
         if step.choices:
             lines.append(TEXT['ask_choices'].format(choices=' | '.join(step.choices)))
         else:
@@ -780,14 +784,16 @@ class Renderer:
         inputs = self.state.inputs
         executor = section.executor
         headline = TEXT['launch'].format(
-            label=section.label(),
+            label=section.id,
             executor=executor,
             spec=self.rb.executor_specs.get(executor or '', TEXT['missing_executor']),
         )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
         lines = [headline, TEXT['message_open'], *self._message(step, section, inputs), TEXT['message_close']]
-        lines.append(TEXT['when_finishes'].format(command=self._command('reply', section.id, TEXT['reply_arg'])))
+        lines.append(
+            TEXT['when_finishes'].format(command=self._command('reply', section.id, placeholder=TEXT['reply_arg']))
+        )
         return lines
 
     def _message(self, step: Step, section: Section, inputs: dict[str, Any]) -> list[str]:
@@ -884,7 +890,8 @@ class Runbook:
         self.here = os.path.dirname(os.path.abspath(sys.argv[0]))
         # Set by `reply` when it asks the executor to correct its reply; printed before what the run does next.
         self._correcting: tuple[Section, str] | None = None
-        self.cmd = f'{sys.executable} {os.path.join(self.here, os.path.basename(sys.argv[0]))}'
+        flow = os.path.join(self.here, os.path.basename(sys.argv[0]))
+        self.cmd = f'{shlex.quote(sys.executable)} {shlex.quote(flow)}'
 
     def inputs(self, **spec: Any) -> None:
         """Inputs of a run. A type (str, int, bool) is required; a value is a default of its type."""
@@ -905,11 +912,11 @@ class Runbook:
         executor: str | Callable[[State], str],
         prompt: str,
         next: Route,
-        inputs: Any = (),
+        inputs: Iterable[str | tuple[str, Any]] = (),
         reply: dict[str, Any] | None = None,
-        reads: Any = (),
-        writes: Any = (),
-        after: Any = (),
+        reads: Iterable[str] = (),
+        writes: Iterable[str] = (),
+        after: Iterable[str] = (),
         side_effects: str | None = None,
         on_failure: Route = None,
         skip: Callable[[State], Target] | None = None,
@@ -932,6 +939,7 @@ class Runbook:
         skip: a function (s) -> target or None, called once `after` is satisfied. A target is followed instead
         of launching the step.
         """
+        self._check_declaration(name, inputs=inputs, reads=reads, writes=writes, after=after)
         self.steps[name] = Step(
             name=name,
             executor=executor,
@@ -953,10 +961,10 @@ class Runbook:
         *,
         question: str,
         next: Route,
-        choices: Any = (),
+        choices: Iterable[str] = (),
         reply: dict[str, Any] | None = None,
         writes: str | None = None,
-        after: Any = (),
+        after: Iterable[str] = (),
     ) -> None:
         """A question to the human.
 
@@ -968,6 +976,7 @@ class Runbook:
         a has the choice as a.choice and the fields as attributes.
         writes: a file name the engine writes the human's verbatim words to, numbered like a step's output.
         """
+        self._check_declaration(name, choices=choices, after=after)
         self.steps[name] = HumanStep(
             name=name,
             question=question,
@@ -977,6 +986,18 @@ class Runbook:
             writes=writes,
             after=list(after),
         )
+
+    def _check_declaration(self, name: str, **collections: Iterable[Any]) -> None:
+        if name in self.steps:
+            raise ValueError(f'step {name!r} is already declared')
+        for other in self.steps:
+            if re.fullmatch(re.escape(other) + r'-\d+', name) or re.fullmatch(re.escape(name) + r'-\d+', other):
+                raise ValueError(
+                    f"step {name!r} conflicts with step {other!r}: names cannot use another step's counter"
+                )
+        for parameter, value in collections.items():
+            if isinstance(value, str):
+                raise TypeError(f'step {name!r}: {parameter} takes a collection, not a lone string')
 
     # ---------- check ----------
 
@@ -1111,6 +1132,21 @@ class Runbook:
     def _supersede(self, run_dir: str, sid: str, note: str) -> RunState:
         state = RunState.load(run_dir)
         section = state.section(sid)
+        if note == NOTE_INTERRUPTED:
+            if section.status is not Status.RUNNING:
+                die(f'interrupted: section {sid} is {section.status.value}; accepts only running sections')
+        else:
+            step = self.steps[section.name]
+            if (
+                section.status not in (Status.FAILED, Status.BLOCKED)
+                or not isinstance(step, Step)
+                or not step.side_effects
+                or section.superseded
+            ):
+                die(
+                    f'relaunch: section {sid} is {section.status.value}; '
+                    'accepts only failed or blocked sections of steps with side_effects that are not already superseded'
+                )
         section.note = note
         section.close(Status.FAILED)
         ProgressLog(run_dir).append(f'{sid}: {note}')
@@ -1157,12 +1193,12 @@ class Runbook:
         log = ProgressLog(run_dir)
         if isinstance(step, HumanStep):
             section = state.new_section(name, Status.WAITING_FOR_HUMAN)
-            log.append(f'{section.label()}: asked: {RunFiles(self.steps, run_dir, state).substitute(step.question)}')
+            log.append(f'{section.id}: asked: {RunFiles(self.steps, run_dir, state).substitute(step.question)}')
         else:
             s = State(state.inputs, plan.done_count, failed_count=plan.failed_count)
             executor = _resolve(step.executor, f'`executor` of step `{name}`', s)
             section = state.new_section(name, Status.RUNNING, executor)
-            log.append(f'{section.label()}: launched')
+            log.append(f'{section.id}: launched')
             schema = RunFiles(self.steps, run_dir, state).schema_path(name)
             os.makedirs(os.path.dirname(schema), exist_ok=True)
             with open(schema, 'w', encoding='utf-8') as f:
@@ -1204,7 +1240,7 @@ class Runbook:
         except FlowError as e:
             die(
                 f'{e}. What you passed is recorded. This is a defect in flow.py: report it to the human and stop. '
-                f'Once it is fixed, the run goes on with: {self.cmd} {run_dir}'
+                f'Once it is fixed, the run goes on with: {self.cmd} {shlex.quote(run_dir)}'
             )
         state.save(run_dir)
         print('\n'.join(lines))

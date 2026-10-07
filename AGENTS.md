@@ -7,6 +7,17 @@ A skill gets copied as plain files into someone else's project and runs there wi
 - Python code uses the standard library of Python 3.9 only; tests use `unittest`.
 - The viewer page loads only files from `skills/runbook-viewer/`; its Content-Security-Policy blocks every other origin. `marked.umd.js` is an upstream release copied as is: to update it, replace the whole file with a newer release and refresh `marked-LICENSE.md`.
 
+## Python code
+
+- Reject declaration mistakes at declaration, naming the step and parameter. Never coerce or replace silently. Refuse a lone string where a collection is required.
+- Keep commands linear in the run's length. Every command replays the whole history, so never scan sections or the log inside a loop over them.
+- Check a recorded section's current status before changing it. Refuse unsupported statuses without changing state or progress.
+- Write state files whole. Serialize first, write a temporary file next to the target, then use `os.replace`.
+- Pass every path and value in a shell command printed for the orchestrator through `shlex.quote`.
+- Type the public `flow.py` API precisely. Use `Any` only for unknown types and `Literal` for a closed set of strings.
+- Keep enums free of `str` mixins, since their formatting differs across supported Python versions.
+- Match the module's style. Use `os.path`, the existing docstring voice, and leave untouched code's layout alone.
+
 ## Engine
 
 `skills/agent-runbook-authoring/references/runbook.py` is the engine's source. `references/runbook-review-loop/runbook.py` is a byte-for-byte copy, and CI compares the two: edit the source, then copy it over.

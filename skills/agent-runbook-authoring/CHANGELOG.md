@@ -2,6 +2,16 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.4.2
+
+An existing `flow.py` needs no change unless it declares a step twice, uses another step's name followed by `-<digits>`, or passes a lone string to a collection parameter. These mistakes now stop it at import with a message naming the step. Collection errors also name the parameter.
+
+- `interrupted` used to supersede a section in any status, so a late command could repeat a completed external effect. It now accepts only `running`. `relaunch` accepts only `failed` or `blocked` sections. Their step must declare `side_effects`, and the section must not already be superseded. A refused command leaves state and progress unchanged.
+- A step named `work-2` could collide with the second launch of `work`, leaving the run stuck. Both `rb.step` and `rb.human` refuse duplicate names and colliding names in either declaration order. Collection parameters refuse lone strings instead of splitting them into characters. The public declaration API now types these collections as iterables.
+- Printed commands now quote the interpreter, `flow.py`, run directory and section ids for the shell. Paths with spaces no longer split into several arguments. Placeholder arguments keep their existing quoting.
+- State is serialized before any file is opened, then written to `state.json.tmp` and replaced with `os.replace`. A failed serialization or an interrupted write no longer truncates the previous state.
+- The flow language now says which edits to `flow.py` are allowed during a run.
+
 ## 1.4.1
 
 No change is required in an existing `flow.py`.
