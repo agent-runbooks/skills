@@ -17,6 +17,7 @@ jobs:
       - run: uv run --frozen ruff check
       - run: uv run --frozen ruff format --check
       - run: uv run --frozen pyright
+      - run: uv build
 
   runbook-engine:
     runs-on: ubuntu-latest

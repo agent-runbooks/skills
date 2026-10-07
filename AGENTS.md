@@ -27,14 +27,14 @@ A change in the engine's behavior is a release:
 
 1. Bump `__version__` in `runbook.py`.
 2. Add a `CHANGELOG.md` entry; a major version says what to change in an existing `flow.py`.
-3. Update `references/flow-language.md` and `references/template.md` in the same change when the `flow.py` API or the Execution rules move.
-4. Tag `agent-runbook-authoring/v<version>` once the commit is on `main`.
+3. Update `references/flow-language.md` and `references/template.md` in the same change when the `flow.py` API or the Execution rules move. A major version also moves the `agent-runbooks` pin in `template.md`.
+4. Tag `agent-runbook-authoring/v<version>` once the commit is on `main`. The tag publishes the engine to PyPI as `agent-runbooks` through `.github/workflows/publish.yml`, which refuses a tag that differs from `__version__`.
 
 ## Checks
 
 Run the steps of `.github/workflows/test.yml` locally before calling a change done. `tests/fixtures/` holds real run folders that `test_view.py` reads; change them together with the tests.
 
-The `lint` job runs ruff and pyright from the root `pyproject.toml` through `uv run`; `uv run ruff format` fixes the layout. These are dev tools only: no skill imports them.
+The `lint` job runs ruff and pyright from the root `pyproject.toml` through `uv run`; `uv run ruff format` fixes the layout. These are dev tools only: no skill imports them. The same file builds the engine's PyPI package; `uv build` checks it locally.
 
 ## Commits
 
