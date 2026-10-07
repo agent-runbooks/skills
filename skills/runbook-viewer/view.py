@@ -96,12 +96,17 @@ def read_progress(run: str) -> list[str]:
 
 
 def list_files(run: str) -> list[dict[str, Any]]:
-    """The regular files directly in the run directory, by name, with size and modification time."""
+    """The regular files in the run directory, excluding temporary state, with size and modification time."""
     files = []
     for name in sorted(os.listdir(run)):
+        if name == STATE + '.tmp':
+            continue
         path = os.path.join(run, name)
         if os.path.isfile(path):
-            st = os.stat(path)
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                continue
             files.append({'name': name, 'size': st.st_size, 'mtime': st.st_mtime})
     return files
 
@@ -120,10 +125,19 @@ def section_files(names: list[str], count: int) -> tuple[list[list[str]], list[s
     return by_section, rest
 
 
-def section_log(progress: list[str], sid: str) -> list[str]:
-    """The lines of progress.md about this section."""
-    prefix = f'- {sid}: '
-    return [line for line in progress if line.startswith(prefix)]
+def section_logs(progress: list[str], ids: list[str]) -> dict[str, list[str]]:
+    """The lines of progress.md grouped by section, in one pass over the log."""
+    logs: dict[str, list[str]] = {sid: [] for sid in ids}
+    for line in progress:
+        if not line.startswith('- '):
+            continue
+        index = line.find(': ', 2)
+        while index != -1:
+            lines = logs.get(line[2:index])
+            if lines is not None:
+                lines.append(line)
+            index = line.find(': ', index + 2)
+    return logs
 
 
 def snapshot(run: str, now: datetime) -> dict[str, Any]:
@@ -131,11 +145,9 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
     state = read_state(run)
     files = list_files(run)
     progress = read_progress(run)
+    logs = section_logs(progress, [s['id'] for s in state['sections']])
     by_section, run_files = section_files([f['name'] for f in files], len(state['sections']))
-    sections = [
-        {'id': s['id'], 'files': by_section[i], 'log': section_log(progress, s['id'])}
-        for i, s in enumerate(state['sections'])
-    ]
+    sections = [{'id': s['id'], 'files': by_section[i], 'log': logs[s['id']]} for i, s in enumerate(state['sections'])]
     return {
         'name': os.path.basename(run),
         'now': now.strftime(TIME_FORMAT),
@@ -148,7 +160,7 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
 
 def run_file(run: str, name: str) -> str | None:
     """The path of a regular file directly in the run directory by this name, or None for anything else."""
-    if not name or name in ('.', '..') or '/' in name or '\\' in name or '\0' in name:
+    if not name or name in ('.', '..', STATE + '.tmp') or '/' in name or '\\' in name or '\0' in name:
         return None
     root = os.path.realpath(run)
     path = os.path.realpath(os.path.join(root, name))

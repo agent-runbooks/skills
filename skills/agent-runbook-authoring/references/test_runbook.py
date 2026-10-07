@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -58,12 +59,11 @@ class RunbookTestCase(unittest.TestCase):
         return out.getvalue()
 
     def fails(self, rb: Runbook, *args: str) -> str:
-        """Runs a command that must exit with status 2; returns its stderr."""
+        """Runs a command, asserts it returns 2, and returns its stderr."""
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(SystemExit) as caught:
-                rb.main(['flow.py', self.run_dir, *args])
-        self.assertEqual(caught.exception.code, 2)
+            code = rb.main(['flow.py', self.run_dir, *args])
+        self.assertEqual(code, 2)
         return err.getvalue()
 
     def start(self, rb: Runbook, **given: object) -> str:
@@ -213,6 +213,15 @@ class StartTest(RunbookTestCase):
         self.call(self.rb, 'log', 'went off script')
         self.assertTrue(self.progress().endswith('- orchestrator: went off script\n'))
 
+    def test_main_returns_2_for_a_refused_command(self) -> None:
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            code = self.rb.main(['flow.py', self.run_dir, 'bogus'])
+        self.assertEqual(code, 2)
+        self.assertEqual(err.getvalue(), "flow.py: unknown command 'bogus'\n")
+        self.assertEqual(out.getvalue(), '')
+        self.assertFalse(os.path.exists(self.run_dir))
+
     def test_bad_commands(self) -> None:
         self.start(self.rb)
         self.assertIn("unknown command 'bogus'", self.fails(self.rb, 'bogus'))
@@ -316,6 +325,25 @@ class RoutingTest(RunbookTestCase):
         )
         self.assertIn('- first: {"status": "done", "n": 1}\n', self.progress())
         limit[0] = 3
+        self.assertEqual(
+            self.first_line(self.call(rb)), 'launch step `second` as a new subagent, executor `main`: Main model'
+        )
+
+    def test_a_refused_transition_keeps_the_reply_and_the_run_resumes(self) -> None:
+        def declare(rb: Runbook) -> None:
+            linear(rb)
+            rb.steps['first'].next = lambda r, s: 'missing'
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        err = self.fails(rb, 'reply', 'first', '{"status": "done"}')
+        self.assertEqual(err, "flow.py: step 'missing' is not declared\n")
+        self.assertEqual(
+            self.state()['sections'],
+            [dict(self.state()['sections'][0], status='done', reply={'status': 'done'})],
+        )
+        self.assertIn('- first: {"status": "done"}\n', self.progress())
+        rb.steps['first'].next = 'second'
         self.assertEqual(
             self.first_line(self.call(rb)), 'launch step `second` as a new subagent, executor `main`: Main model'
         )
@@ -1072,6 +1100,77 @@ class LoopTest(RunbookTestCase):
 
 
 class RelaunchTest(RunbookTestCase):
+    def test_supersede_refuses_invalid_statuses_without_writing(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('publish')
+            rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish', next=end('ready'))
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        state = runbook.RunState.load(self.run_dir)
+        section = state.sections[0]
+        cases = [('interrupted', status, None) for status in runbook.Status if status is not runbook.Status.RUNNING]
+        cases += [
+            ('relaunch', status, None)
+            for status in (runbook.Status.RUNNING, runbook.Status.WAITING_FOR_HUMAN, runbook.Status.DONE)
+        ]
+        cases += [
+            ('relaunch', status, note)
+            for status in (runbook.Status.FAILED, runbook.Status.BLOCKED)
+            for note in (runbook.NOTE_INTERRUPTED, runbook.NOTE_RELAUNCHED)
+        ]
+        for command, status, note in cases:
+            with self.subTest(command=command, status=status, note=note):
+                section.status, section.note = status, note
+                state.save(self.run_dir)
+                with open(runbook.RunState.path(self.run_dir), 'rb') as f:
+                    before = f.read()
+                progress = self.progress()
+                err = self.fails(rb, command, 'publish')
+                self.assertIn(f'section publish is {status.value}', err)
+                self.assertIn('accepts only', err)
+                with open(runbook.RunState.path(self.run_dir), 'rb') as f:
+                    self.assertEqual(f.read(), before)
+                self.assertEqual(self.progress(), progress)
+
+    def test_relaunch_refuses_steps_without_side_effects_and_human_steps(self) -> None:
+        rb = self.runbook(linear)
+        rb.human('ask', question='Proceed?', next=end('ready'))
+        self.start(rb)
+        state = runbook.RunState.load(self.run_dir)
+        for name in ('first', 'ask'):
+            for status in (runbook.Status.FAILED, runbook.Status.BLOCKED):
+                with self.subTest(name=name, status=status):
+                    state.sections[0] = runbook.Section(id=name, name=name, status=status)
+                    state.save(self.run_dir)
+                    before, progress = self.state(), self.progress()
+                    err = self.fails(rb, 'relaunch', name)
+                    self.assertIn(f'section {name} is {status.value}', err)
+                    self.assertIn('side_effects', err)
+                    self.assertEqual(self.state(), before)
+                    self.assertEqual(self.progress(), progress)
+
+    def test_blocked_side_effect_section_can_be_relaunched(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('publish')
+            rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish', next=end('ready'))
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.call(rb, 'reply', 'publish', '{"status": "blocked", "reason": "offline"}')
+        self.assertIn('launch step `publish-2`', self.call(rb, 'relaunch', 'publish'))
+        self.assertEqual(self.state()['sections'][0]['note'], runbook.NOTE_RELAUNCHED)
+
+    def test_running_side_effect_section_can_be_interrupted(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('publish')
+            rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish', next=end('ready'))
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.assertIn('launch step `publish-2`', self.call(rb, 'interrupted', 'publish'))
+        self.assertEqual(self.state()['sections'][0]['note'], runbook.NOTE_INTERRUPTED)
+
     def test_interrupted_opens_a_new_section(self) -> None:
         rb = self.runbook(linear)
         self.start(rb)
@@ -1453,6 +1552,151 @@ class TimingTest(RunbookTestCase):
             self.fields(),
             [('first', None, None, '2026-10-03T10:01:00Z'), ('second', 'main', '2026-10-03T10:02:00Z', None)],
         )
+
+
+class DeclarationTest(RunbookTestCase):
+    def declare(self, rb: Runbook, kind: str, name: str, **kwargs: Any) -> None:
+        if kind == 'step':
+            rb.step(name, executor='main', prompt='prompts/a.md', next=end('ready'), **kwargs)
+        else:
+            rb.human(name, question='Proceed?', next=end('ready'), **kwargs)
+
+    def test_collection_parameters_refuse_strings_at_declaration(self) -> None:
+        for kind, parameters in (('step', ('inputs', 'reads', 'writes', 'after')), ('human', ('choices', 'after'))):
+            for parameter in parameters:
+                for value in ('file.md', ''):
+                    with self.subTest(kind=kind, parameter=parameter, value=value):
+                        rb = self.runbook(lambda rb: None)
+                        with self.assertRaises(TypeError) as caught:
+                            self.declare(rb, kind, 'work', **{parameter: value})
+                        self.assertIn('work', str(caught.exception))
+                        self.assertIn(parameter, str(caught.exception))
+                        self.assertEqual(rb.steps, {})
+
+    def test_duplicate_names_do_not_replace_the_first_declaration(self) -> None:
+        for first in ('step', 'human'):
+            for second in ('step', 'human'):
+                with self.subTest(first=first, second=second):
+                    rb = self.runbook(lambda rb: None)
+                    self.declare(rb, first, 'work')
+                    original = rb.steps['work']
+                    with self.assertRaisesRegex(ValueError, 'work.*already declared'):
+                        self.declare(rb, second, 'work')
+                    self.assertIs(rb.steps['work'], original)
+
+    def test_counter_names_are_refused_in_either_order(self) -> None:
+        for first in ('step', 'human'):
+            for second in ('step', 'human'):
+                for counter in ('0', '1', '2', '02', '123'):
+                    for names in (('work', f'work-{counter}'), (f'work-{counter}', 'work')):
+                        with self.subTest(first=first, second=second, names=names):
+                            rb = self.runbook(lambda rb: None)
+                            self.declare(rb, first, names[0])
+                            with self.assertRaises(ValueError) as caught:
+                                self.declare(rb, second, names[1])
+                            self.assertIn(names[0], str(caught.exception))
+                            self.assertIn(names[1], str(caught.exception))
+                            self.assertEqual(list(rb.steps), [names[0]])
+
+    def test_other_suffixes_and_regex_characters_do_not_collide(self) -> None:
+        rb = self.runbook(lambda rb: None)
+        for name in ('work', 'work-2x', 'work-', 'w.rk', 'wxrk-2'):
+            self.declare(rb, 'step', name)
+        self.assertEqual(len(rb.steps), 5)
+
+    def test_iterables_and_human_writes_remain_supported(self) -> None:
+        rb = self.runbook(lambda rb: None)
+        rb.step(
+            'work',
+            executor='main',
+            prompt='prompts/a.md',
+            next='ask',
+            inputs=iter(['repo', ('rounds', 2)]),
+            reads=('brief.md',),
+            writes=iter(['out.md']),
+            after=(),
+        )
+        rb.human(
+            'ask',
+            question='Proceed?',
+            next=end('ready'),
+            choices=iter(['yes', 'no']),
+            writes='words.md',
+            after=('work',),
+        )
+        rb.start('work')
+        self.assertEqual(self.check(rb), (0, 'flow.py is consistent.\n'))
+        step = rb.steps['work']
+        self.assertIsInstance(step, runbook.Step)
+        assert isinstance(step, runbook.Step)
+        self.assertEqual(step.inputs, ['repo', ('rounds', 2)])
+        self.assertEqual(step.writes, ['out.md'])
+
+
+class StateSaveTest(RunbookTestCase):
+    def test_serialization_error_keeps_the_previous_state_whole(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        path = runbook.RunState.path(self.run_dir)
+        with open(path, 'rb') as f:
+            before = f.read()
+        state = runbook.RunState.load(self.run_dir)
+        state.inputs['bad'] = object()
+        with self.assertRaises(TypeError):
+            state.save(self.run_dir)
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(runbook.RunState.load(self.run_dir).inputs, {'repo': '/repo'})
+
+    def test_save_overwrites_a_leftover_temporary_file(self) -> None:
+        rb = self.runbook(linear)
+        self.start(rb)
+        path = runbook.RunState.path(self.run_dir)
+        with open(path + '.tmp', 'w') as f:
+            f.write('interrupted write')
+        state = runbook.RunState.load(self.run_dir)
+        state.inputs['repo'] = '/new'
+        state.save(self.run_dir)
+        self.assertEqual(runbook.RunState.load(self.run_dir).inputs['repo'], '/new')
+        self.assertFalse(os.path.exists(path + '.tmp'))
+
+
+class ShellCommandTest(RunbookTestCase):
+    def test_printed_reply_answer_and_resume_commands_preserve_arguments(self) -> None:
+        here = self.here + ' with spaces'
+        os.rename(self.here, here)
+        self.here = here
+        self.run_dir += ' with spaces'
+        executable = "/tmp/python bin/py'thon"
+        work, ask = "work's $task", 'ask me; now'
+
+        def broken(r: Any, s: Any) -> runbook.Target:
+            raise ValueError('broken transition')
+
+        def declare(rb: Runbook) -> None:
+            rb.start(work)
+            rb.step(work, executor='main', prompt='prompts/a.md', next=ask)
+            rb.human(ask, question='Proceed?', choices=['yes', 'no'], next=broken)
+
+        with mock.patch.object(sys, 'executable', executable):
+            rb = self.runbook(declare)
+        prefix = [executable, os.path.join(self.here, 'flow.py'), self.run_dir]
+        out = self.start(rb)
+        command = next(
+            line.removeprefix('when it finishes: ')
+            for line in out.splitlines()
+            if line.startswith('when it finishes: ')
+        )
+        self.assertEqual(shlex.split(command), [*prefix, 'reply', work, '<the last JSON object of its message>'])
+        out = self.reply(rb, work)
+        command = next(line.removeprefix('  then: ') for line in out.splitlines() if line.startswith('  then: '))
+        self.assertEqual(
+            shlex.split(command),
+            [*prefix, 'answer', ask, '<the choice>', '<their words verbatim, or - to read them from stdin>'],
+        )
+        err = self.fails(rb, 'answer', ask, 'yes')
+        command = err.split('Once it is fixed, the run goes on with: ', 1)[1].strip()
+        self.assertEqual(shlex.split(command), prefix)
 
 
 class CheckTest(RunbookTestCase):

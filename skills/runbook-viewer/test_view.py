@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any
+from unittest import mock
 
 import view
 
@@ -151,6 +152,61 @@ class StatusTest(RunDirTestCase):
 
 
 class FilesTest(RunDirTestCase):
+    def test_temporary_state_is_not_listed_or_served(self) -> None:
+        self.write('state.json.tmp', '{"runbook": ')
+        stat = os.stat
+
+        def check_stat(path: str) -> os.stat_result:
+            self.assertNotEqual(path, os.path.join(self.run_dir, 'state.json.tmp'))
+            return stat(path)
+
+        with mock.patch.object(view.os, 'stat', side_effect=check_stat):
+            snap = view.snapshot(self.run_dir, NOW)
+            self.assertIsNone(view.run_file(self.run_dir, 'state.json.tmp'))
+        self.assertNotIn('state.json.tmp', [f['name'] for f in snap['files']])
+        self.assertNotIn('state.json.tmp', snap['run_files'])
+
+    def test_file_disappearing_before_stat_is_skipped(self) -> None:
+        path = os.path.join(self.run_dir, 'changes.diff')
+        isfile = os.path.isfile
+
+        def remove_after_isfile(candidate: str) -> bool:
+            result = isfile(candidate)
+            if candidate == path:
+                os.remove(candidate)
+            return result
+
+        with mock.patch.object(view.os.path, 'isfile', side_effect=remove_after_isfile):
+            snap = view.snapshot(self.run_dir, NOW)
+        self.assertNotIn('changes.diff', [f['name'] for f in snap['files']])
+        self.assertNotIn('changes.diff', snap['run_files'])
+
+    def test_section_logs_keep_exact_prefix_matching_and_order(self) -> None:
+        lines = ['- a: first', '- a-2: second', '- a: b: shared', '- a:no space', '- other: ignored', '- a: last']
+        self.assertEqual(
+            view.section_logs(lines, ['a', 'a-2', 'a: b', 'absent']),
+            {
+                'a': ['- a: first', '- a: b: shared', '- a: last'],
+                'a-2': ['- a-2: second'],
+                'a: b': ['- a: b: shared'],
+                'absent': [],
+            },
+        )
+
+    def test_snapshot_reads_and_scans_progress_once(self) -> None:
+        class Lines(list[str]):
+            scans = 0
+
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+
+        progress = Lines(PROGRESS.splitlines())
+        with mock.patch.object(view, 'read_progress', return_value=progress) as read:
+            view.snapshot(self.run_dir, NOW)
+        read.assert_called_once_with(self.run_dir)
+        self.assertEqual(progress.scans, 1)
+
     def test_section_files_and_log(self) -> None:
         snap = view.snapshot(self.run_dir, NOW)
         self.assertEqual(snap['now'], '2026-10-03T14:30:00Z')
@@ -240,6 +296,8 @@ class ServerTest(RunDirTestCase):
         snap = json.loads(body)
         self.assertEqual((snap['name'], snap['state']['status']), ('synthetic', 'waiting_for_human'))
         self.assertEqual(self.get('/api/file?name=01-fix.md'), (200, 'text/plain; charset=utf-8', b'# 01-fix.md\n'))
+        self.write('state.json.tmp', '{"runbook": ')
+        self.assertEqual(self.get('/api/file?name=state.json.tmp')[0], 404)
         self.assertEqual(self.get('/api/file?name=..%2Fsynthetic%2Fbrief.md')[0], 404)
         self.assertEqual(self.get('/nope')[0], 404)
         self.write('state.json', '{"runbook": ')
