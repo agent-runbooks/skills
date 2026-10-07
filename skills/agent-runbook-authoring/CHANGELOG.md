@@ -2,6 +2,12 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.4.3
+
+No change is required in an existing `flow.py` or for the orchestrator.
+
+- `Runbook.main` returns 2 on a refused command instead of exiting the process. This affects callers in the same process. The engine raises `CommandError` for refusals. `FlowError` still identifies defects in flow functions. `main` prints their existing messages. Shell commands still exit 2. Commands save what they recorded as before.
+
 ## 1.4.2
 
 An existing `flow.py` needs no change unless it declares a step twice, uses another step's name followed by `-<digits>`, or passes a lone string to a collection parameter. These mistakes now stop it at import with a message naming the step. Collection errors also name the parameter.

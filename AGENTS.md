@@ -9,6 +9,7 @@ A skill gets copied as plain files into someone else's project and runs there wi
 
 ## Python code
 
+- Raise `CommandError` for a refused command; only `main` prints it and returns the exit code. Never call `sys.exit` below `main`.
 - Reject declaration mistakes at declaration, naming the step and parameter. Never coerce or replace silently. Refuse a lone string where a collection is required.
 - Keep commands linear in the run's length. Every command replays the whole history, so never scan sections or the log inside a loop over them.
 - Check a recorded section's current status before changing it. Refuse unsupported statuses without changing state or progress.

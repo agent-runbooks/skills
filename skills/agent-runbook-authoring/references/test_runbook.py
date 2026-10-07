@@ -59,12 +59,11 @@ class RunbookTestCase(unittest.TestCase):
         return out.getvalue()
 
     def fails(self, rb: Runbook, *args: str) -> str:
-        """Runs a command that must exit with status 2; returns its stderr."""
+        """Runs a command, asserts it returns 2, and returns its stderr."""
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(SystemExit) as caught:
-                rb.main(['flow.py', self.run_dir, *args])
-        self.assertEqual(caught.exception.code, 2)
+            code = rb.main(['flow.py', self.run_dir, *args])
+        self.assertEqual(code, 2)
         return err.getvalue()
 
     def start(self, rb: Runbook, **given: object) -> str:
@@ -214,6 +213,15 @@ class StartTest(RunbookTestCase):
         self.call(self.rb, 'log', 'went off script')
         self.assertTrue(self.progress().endswith('- orchestrator: went off script\n'))
 
+    def test_main_returns_2_for_a_refused_command(self) -> None:
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            code = self.rb.main(['flow.py', self.run_dir, 'bogus'])
+        self.assertEqual(code, 2)
+        self.assertEqual(err.getvalue(), "flow.py: unknown command 'bogus'\n")
+        self.assertEqual(out.getvalue(), '')
+        self.assertFalse(os.path.exists(self.run_dir))
+
     def test_bad_commands(self) -> None:
         self.start(self.rb)
         self.assertIn("unknown command 'bogus'", self.fails(self.rb, 'bogus'))
@@ -317,6 +325,25 @@ class RoutingTest(RunbookTestCase):
         )
         self.assertIn('- first: {"status": "done", "n": 1}\n', self.progress())
         limit[0] = 3
+        self.assertEqual(
+            self.first_line(self.call(rb)), 'launch step `second` as a new subagent, executor `main`: Main model'
+        )
+
+    def test_a_refused_transition_keeps_the_reply_and_the_run_resumes(self) -> None:
+        def declare(rb: Runbook) -> None:
+            linear(rb)
+            rb.steps['first'].next = lambda r, s: 'missing'
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        err = self.fails(rb, 'reply', 'first', '{"status": "done"}')
+        self.assertEqual(err, "flow.py: step 'missing' is not declared\n")
+        self.assertEqual(
+            self.state()['sections'],
+            [dict(self.state()['sections'][0], status='done', reply={'status': 'done'})],
+        )
+        self.assertIn('- first: {"status": "done"}\n', self.progress())
+        rb.steps['first'].next = 'second'
         self.assertEqual(
             self.first_line(self.call(rb)), 'launch step `second` as a new subagent, executor `main`: Main model'
         )
