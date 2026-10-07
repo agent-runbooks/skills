@@ -1,6 +1,6 @@
 # Writing flow.py
 
-`flow.py` declares the steps and transitions of a runbook in Python, on top of `runbook.py`, which is copied from this skill unchanged. `flow.py` is also the command the orchestrator runs: `runbook.py` gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`.
+`flow.py` declares the steps and transitions of a runbook in Python, on top of `runbook.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows. `flow.py` is also the command the orchestrator runs: `runbook.py` gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`.
 
 ```python
 #!/usr/bin/env python3

@@ -31,6 +31,10 @@ class RunbookTestCase(unittest.TestCase):
                 f.write(name)
         self.run_dir = os.path.join(os.path.realpath(tmp.name), 'run')
         self.cmd = f'{sys.executable} {self.here}/flow.py'
+        environ = mock.patch.dict(os.environ)
+        environ.start()
+        self.addCleanup(environ.stop)
+        os.environ.pop('UV', None)
         self.minute = 0
         clock = mock.patch.object(runbook, 'utc_now', self.tick)
         clock.start()
@@ -1697,6 +1701,18 @@ class ShellCommandTest(RunbookTestCase):
         err = self.fails(rb, 'answer', ask, 'yes')
         command = err.split('Once it is fixed, the run goes on with: ', 1)[1].strip()
         self.assertEqual(shlex.split(command), prefix)
+
+    def test_under_uv_run_commands_go_through_uv(self) -> None:
+        def declare(rb: Runbook) -> None:
+            rb.start('a')
+            rb.step('a', executor='main', prompt='prompts/a.md', next=end('done'))
+
+        os.environ['UV'] = '/usr/local/bin/uv'
+        rb = self.runbook(declare)
+        self.assertIn(
+            f"when it finishes: uv run {self.here}/flow.py {self.run_dir} reply a '<the last JSON object of its message>'",
+            self.start(rb),
+        )
 
 
 class CheckTest(RunbookTestCase):

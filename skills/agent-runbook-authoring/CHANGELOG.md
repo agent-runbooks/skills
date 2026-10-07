@@ -2,6 +2,13 @@
 
 Versions of `references/runbook.py`. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 1.4.4
+
+No change is required in an existing `flow.py` or for the orchestrator.
+
+- The engine is on PyPI as `agent-runbooks`, imported as `agent_runbooks`, from this release on. A runbook can declare it in `flow.py` and run through `uv run` instead of carrying a copy: `references/template.md`, The engine from PyPI.
+- Under `uv run`, the commands `flow.py` prints start with `uv run <flow.py>`. They used to name the interpreter of uv's cached environment, which `uv cache clean` deletes.
+
 ## 1.4.3
 
 No change is required in an existing `flow.py` or for the orchestrator.

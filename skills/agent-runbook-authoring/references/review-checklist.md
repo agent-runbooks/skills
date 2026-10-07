@@ -12,7 +12,7 @@ Every guess and every alternative reading the subagent reports is a defect in th
 
 ## Before the run: the text
 
-`python3 flow.py --check` in the runbook directory passes, and a scratch run fed every branch by hand ended where the author expected. The rest is read by eye:
+`python3 flow.py --check` in the runbook directory passes (`uv run flow.py --check` with the engine from PyPI), and a scratch run fed every branch by hand ended where the author expected. The rest is read by eye:
 
 flow.py:
 
@@ -30,7 +30,7 @@ Prompts:
 - A prompt that runs commands says where their exit codes and failing output go, and what counts as skipped.
 - An output file another step parses has its format stated: headings, fields, what to write when there is nothing.
 - `common.md` says what "the changes" are and how the checks are run.
-- The copied sections match this skill's references word for word, and `runbook.py` is this skill's `runbook.py`.
+- The copied sections match this skill's references word for word, and `runbook.py` is this skill's `runbook.py`. With the engine from PyPI instead, `flow.py` declares `agent-runbooks` as `template.md` shows, and the Execution rules differ only in `uv run` for `python3`.
 
 SKILL.md:
 

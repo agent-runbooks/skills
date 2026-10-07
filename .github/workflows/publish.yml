@@ -1,0 +1,24 @@
+name: publish
+
+on:
+  push:
+    tags: ['agent-runbook-authoring/v*']
+
+permissions:
+  contents: read
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv build
+      - name: The tag names the version that was built
+        run: |
+          version=$(uv run --no-project --with dist/*.whl python -c 'import agent_runbooks; print(agent_runbooks.__version__)')
+          test "$GITHUB_REF_NAME" = "agent-runbook-authoring/v$version"
+      - run: uv publish --trusted-publishing always
