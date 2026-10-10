@@ -1,0 +1,78 @@
+diff --git a/tests/test_slug.py b/tests/test_slug.py
+index ee2409c..a85fd61 100644
+--- a/tests/test_slug.py
++++ b/tests/test_slug.py
+@@ -13,6 +13,40 @@ class SlugifyTest(unittest.TestCase):
+     def test_empty(self) -> None:
+         self.assertEqual(slugify('  !!  '), '')
+ 
++    def test_max_length_cuts_on_word_boundary(self) -> None:
++        self.assertEqual(slugify('Hello big World', max_length=10), 'hello-big')
++        self.assertEqual(slugify('Hello big World', max_length=8), 'hello')
++
++    def test_max_length_exact_fit(self) -> None:
++        self.assertEqual(slugify('Hello, World!', max_length=11), 'hello-world')
++
++    def test_max_length_longer_than_slug(self) -> None:
++        self.assertEqual(slugify('Hello, World!', max_length=100), 'hello-world')
++
++    def test_max_length_first_word_too_long(self) -> None:
++        self.assertEqual(slugify('Supercalifragilistic word', max_length=5), '')
++
++    def test_max_length_zero(self) -> None:
++        self.assertEqual(slugify('Hello', max_length=0), '')
++
++    def test_max_length_negative_raises(self) -> None:
++        with self.assertRaises(ValueError):
++            slugify('Hello', max_length=-1)
++
++    def test_max_length_keeps_punctuated_words_whole(self) -> None:
++        self.assertEqual(slugify('Version 3.14 notes', max_length=9), 'version')
++        self.assertEqual(slugify('Version 3.14 notes', max_length=12), 'version-3-14')
++        self.assertEqual(slugify("O'Brien Smith", max_length=3), '')
++        self.assertEqual(slugify('AT&T rocks', max_length=3), '')
++        self.assertEqual(slugify('e-mail me', max_length=1), '')
++        self.assertEqual(slugify('e-mail me', max_length=9), 'e-mail-me')
++
++    def test_max_length_skips_punctuation_only_words(self) -> None:
++        self.assertEqual(slugify('Hello -- big World', max_length=9), 'hello-big')
++
++    def test_max_length_none_is_default(self) -> None:
++        self.assertEqual(slugify('Crème brûlée', max_length=None), 'creme-brulee')
++
+ 
+ if __name__ == '__main__':
+     unittest.main()
+diff --git a/textkit/slug.py b/textkit/slug.py
+index 454c265..915eb02 100644
+--- a/textkit/slug.py
++++ b/textkit/slug.py
+@@ -3,8 +3,25 @@ import re
+ import unicodedata
+ 
+ 
+-def slugify(text: str) -> str:
+-    """Lowercase ASCII words of `text` joined by hyphens: 'Hello, World!' -> 'hello-world'."""
++def slugify(text: str, max_length: int | None = None) -> str:
++    """Lowercase ASCII words of `text` joined by hyphens: 'Hello, World!' -> 'hello-world'.
++
++    With `max_length`, keeps the leading words that fit in that many characters.
++    Words are split on whitespace and never cut: 'O'Brien', '3.14' and 'e-mail' are
++    kept or dropped whole, and a first word longer than `max_length` gives ''.
++    Raises ValueError if `max_length` is negative.
++    """
++    if max_length is not None and max_length < 0:
++        raise ValueError(f'max_length must be non-negative, got {max_length}')
+     ascii_text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+     words = re.findall(r'[a-z0-9]+', ascii_text.lower())
+-    return '-'.join(words)
++    if max_length is None:
++        return '-'.join(words)
++    source_words = ('-'.join(re.findall(r'[a-z0-9]+', piece)) for piece in ascii_text.lower().split())
++    slug = ''
++    for word in filter(None, source_words):
++        candidate = f'{slug}-{word}' if slug else word
++        if len(candidate) > max_length:
++            break
++        slug = candidate
++    return slug

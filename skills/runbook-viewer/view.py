@@ -33,7 +33,8 @@ from urllib.parse import parse_qs, urlsplit
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = 'state.json'
 PROGRESS = 'progress.md'
-FORMAT = 2
+# The engine's file was runbook.py through 1.x and is agent_runbooks.py from 2.0.
+FORMATS = {1: 'runbook.py 1.x', 2: 'agent_runbooks.py 2.x'}
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 MARKS = {
     'done': '✓',
@@ -102,7 +103,8 @@ def find_run(path: str) -> str:
 
 
 def read_state(run: str) -> dict[str, Any]:
-    """The contents of state.json, refused unless it is format 2. A state without `format` is from engine 1.x."""
+    """The contents of state.json in format 2: a format-1 state converted by from_format_1, any other format refused. A
+    state without `format` is from engine 1.x."""
     path = os.path.join(run, STATE)
     try:
         with open(path, encoding='utf-8') as f:
@@ -112,17 +114,64 @@ def read_state(run: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise StateUnreadable(f'{STATE}: not a JSON object')
     found = data.get('format', 1)
-    if found != FORMAT:
-        # The engine's file was runbook.py through 1.x and is agent_runbooks.py from 2.0.
-        name = 'runbook.py' if found == 1 else 'agent_runbooks.py'
-        engine = f'{name} {found}.x' if type(found) is int else 'an unknown engine'
-        raise WrongFormat(
-            f'{path} is format {found}, from {engine}; this viewer reads format {FORMAT}, '
-            f'from agent_runbooks.py {FORMAT}.x'
-        )
+    if type(found) is not int or found not in FORMATS:
+        engine = f'agent_runbooks.py {found}.x' if type(found) is int else 'an unknown engine'
+        reads = ', and '.join(f'format {n}, from {name}' for n, name in FORMATS.items())
+        raise WrongFormat(f'{path} is format {found}, from {engine}; this viewer reads {reads}')
+    if found == 1:
+        if not isinstance(data.get('sections'), list):
+            raise StateUnreadable(f'{STATE}: no sections')
+        return from_format_1(data, os.listdir(run))
     if not isinstance(data.get('calls'), list):
         raise StateUnreadable(f'{STATE}: no calls')
     return data
+
+
+def from_format_1(data: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    """A format-1 state, a flat list of sections, as format 2: each section one call of main, its id the address.
+    This is where the two formats meet: everything after read_state reads format 2 only.
+
+    Engine 1.x recorded an interrupted section as failed with the note `interrupted`. The note of a failed section holds
+    the orchestrator's words, of an answered one the human's choice. A section's files are the names <NN>-…, NN its
+    index in `sections`.
+    """
+    sections = data['sections']
+    by_section: list[list[str]] = [[] for _ in sections]
+    for name in sorted(names):
+        match = re.match(r'(\d{2,})-', name)
+        index = int(match.group(1)) if match else -1
+        if match and index < len(sections) and match.group(1) == f'{index:02d}':
+            by_section[index].append(name)
+    calls = []
+    for section, files in zip(sections, by_section):
+        if not isinstance(section, dict):
+            continue
+        status, note = section.get('status'), section.get('note')
+        reply = {k: v for k, v in (section.get('reply') or {}).items() if k != 'status'}
+        human = section.get('answer') is not None or (status == 'done' and not reply and note is not None)
+        if status == 'waiting_for_human':
+            status = 'waiting'
+        elif status == 'failed' and str(note or '').startswith('interrupted'):
+            status = 'interrupted'
+        elif status in ('failed', 'blocked'):
+            reply = {'reason': note or reply.get('reason', '')}
+        elif human:
+            reply = {'choice': note, **reply}
+        calls.append(
+            {
+                'id': section.get('id'),
+                'attempt': 1,
+                'kind': 'human' if human else 'step',
+                'step': section.get('name'),
+                'status': status,
+                'reply': reply,
+                'executor': section.get('executor'),
+                'started_at': section.get('started_at'),
+                'ended_at': section.get('ended_at'),
+                'writes': {name: name for name in files},
+            }
+        )
+    return {**{k: v for k, v in data.items() if k != 'sections'}, 'calls': calls}
 
 
 def read_progress(run: str) -> list[str]:
@@ -190,15 +239,42 @@ def canonical(name: str) -> str:
     return match.group(1) + (f'@{attempt}' if attempt != 1 else '')
 
 
-def call_logs(progress: list[str], labels: list[str]) -> dict[str, list[str]]:
-    """The lines of progress.md grouped by the attempt they name, in one pass over the log."""
+def header_line(progress: list[str], inputs: Any) -> int:
+    """The index of the `## Log` line that ProgressLog.create of either engine wrote after the inputs, -1 if progress.md
+    does not have it where the inputs put it. An input value or a human's words can hold a `## Log` line of their own."""
+    if not isinstance(inputs, dict):
+        return -1
+    values = ''.join(
+        f'- {k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}\n' for k, v in inputs.items()
+    )
+    at = 5 + len(values.splitlines())
+    return at if at < len(progress) and progress[at] == '## Log' else -1
+
+
+def call_logs(progress: list[str], labels: list[str], inputs: Any = None) -> dict[str, list[str]]:
+    """The lines of progress.md grouped by the attempt they name, in one pass over the log. The run's inputs locate the
+    header; without them the first `## Log` line is the header."""
     logs: dict[str, list[str]] = {name: [] for name in labels}
-    for line in progress:
+    known = header_line(progress, inputs)
+    header = False
+    for i, line in enumerate(progress):
+        if not header and (i == known if known != -1 else line == '## Log'):
+            # The inputs above it are `- name: value` lines too, and a format-1 section can share an input's name.
+            header = True
+            for lines in logs.values():
+                lines.clear()
+            continue
+        # A format-1 section id may hold `: ` or end in `@1`, so each `: ` is a candidate end of the name, and the name
+        # as written comes before its canonical spelling. A format-2 label holds neither.
         end = line.find(': ', 2) if line.startswith('- ') else -1
-        if end != -1:
-            lines = logs.get(canonical(line[2:end]))
+        while end != -1:
+            name = line[2:end]
+            lines = logs.get(name)
+            if lines is None:
+                lines = logs.get(canonical(name))
             if lines is not None:
                 lines.append(line)
+            end = line.find(': ', end + 2)
     return logs
 
 
@@ -210,7 +286,7 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
     files = list_files(run)
     names = {f['name'] for f in files}
     calls = launches(state)
-    logs = call_logs(read_progress(run), [label(c) for c in calls])
+    logs = call_logs(read_progress(run), [label(c) for c in calls], state.get('inputs'))
     entries = []
     claimed = set()
     for c in calls:

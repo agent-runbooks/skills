@@ -1,0 +1,111 @@
+{
+  "runbook": "runbook-task-cycle",
+  "status": "ready",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo",
+    "checks": "python3 -m unittest",
+    "coder": "main",
+    "maxFixRounds": 2
+  },
+  "sections": [
+    {
+      "id": "preflight",
+      "name": "preflight",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "clean": true
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "implement",
+      "name": "implement",
+      "status": "done",
+      "reply": {
+        "status": "done"
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "checks",
+      "name": "checks",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "passed": true
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "review-a",
+      "name": "review-a",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "findings": 1
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "review-b",
+      "name": "review-b",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "findings": 0
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "triage",
+      "name": "triage",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "to_fix": 1
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "fix",
+      "name": "fix",
+      "status": "done",
+      "reply": {
+        "status": "done"
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "verify",
+      "name": "verify",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "unresolved": 0,
+        "passed": true
+      },
+      "note": null,
+      "answer": null
+    },
+    {
+      "id": "polish",
+      "name": "polish",
+      "status": "done",
+      "reply": {
+        "status": "done",
+        "passed": true
+      },
+      "note": null,
+      "answer": null
+    }
+  ]
+}

@@ -29,14 +29,13 @@ NOW_READY = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
 NOW_QUESTION = datetime(2026, 10, 7, 14, 20, 0, tzinfo=timezone.utc)
 NOW_RUNNING = datetime(2026, 10, 7, 9, 14, 0, tzinfo=timezone.utc)
 NOW_NESTED = datetime(2026, 10, 7, 16, 10, 0, tzinfo=timezone.utc)
-
-# A run as engine 1.x recorded it.
-FORMAT_1 = {
-    'runbook': 'runbook-task-cycle',
-    'status': 'ready',
-    'inputs': {},
-    'sections': [{'id': 'preflight', 'name': 'preflight', 'status': 'done', 'reply': {'status': 'done'}}],
-}
+# Runs of engine 1.x, state.json format 1, kept from before engine 2.0.
+READY_1 = os.path.join(FIXTURES, '20261002-slugify-max-length')
+QUESTION_1 = os.path.join(FIXTURES, '20261003-slugify-transliterate-question')
+RUNNING_1 = os.path.join(FIXTURES, '20261003-slugify-transliterate-running')
+NOW_QUESTION_1 = datetime(2026, 10, 3, 21, 25, 0, tzinfo=timezone.utc)
+NOW_RUNNING_1 = datetime(2026, 10, 3, 21, 31, 0, tzinfo=timezone.utc)
+READS = 'this viewer reads format 1, from runbook.py 1.x, and format 2, from agent_runbooks.py 2.x'
 
 
 class RunDirTestCase(unittest.TestCase):
@@ -195,24 +194,176 @@ class FormatTest(RunDirTestCase):
     def test_other_formats_are_refused(self) -> None:
         path = os.path.join(self.run_dir, 'state.json')
         for state, engine in (
-            (FORMAT_1, 'format 1, from runbook.py 1.x'),
-            ({'format': 3}, 'format 3, from agent_runbooks.py 3.x'),
+            ({'format': 3, 'calls': []}, 'format 3, from agent_runbooks.py 3.x'),
+            ({'format': '2', 'calls': []}, 'format 2, from an unknown engine'),
         ):
             self.write('state.json', json.dumps(state))
             with self.subTest(engine=engine):
                 with self.assertRaises(view.WrongFormat) as caught:
                     view.read_state(self.run_dir)
-                self.assertEqual(
-                    str(caught.exception), f'{path} is {engine}; this viewer reads format 2, from agent_runbooks.py 2.x'
-                )
+                self.assertEqual(str(caught.exception), f'{path} is {engine}; {READS}')
 
     def test_status_and_page_refuse_with_one_line(self) -> None:
-        self.write('state.json', json.dumps(FORMAT_1))
+        self.write('state.json', json.dumps({'format': 3}))
         for argv in ([self.run_dir, '--status'], [self.runs]):
             err = io.StringIO()
             with self.subTest(argv=argv), contextlib.redirect_stderr(err):
                 self.assertEqual(view.main(argv), 2)
-            self.assertRegex(err.getvalue(), r'^view\.py: .* is format 1, from runbook\.py 1\.x; [^\n]*\n$')
+            self.assertRegex(err.getvalue(), r'^view\.py: .* is format 3, from agent_runbooks\.py 3\.x; [^\n]*\n$')
+
+
+class Format1Test(unittest.TestCase):
+    """A run of engine 1.x shows as a run of engine 2.x with no groups: one call of main per section."""
+
+    def test_finished_run_without_executors_or_times(self) -> None:
+        self.assertEqual(
+            view.status_text(READY_1, NOW_QUESTION_1),
+            """\
+20261002-slugify-max-length · runbook-task-cycle · ready
+✓ preflight  clean: true
+✓ implement
+✓ checks     passed: true
+✓ review-a   findings: 1
+✓ review-b   findings: 0
+✓ triage     to_fix: 1
+✓ fix
+✓ verify     unresolved: 0, passed: true
+✓ polish     passed: true""",
+        )
+
+    def test_run_waiting_for_the_human(self) -> None:
+        self.assertEqual(
+            view.status_text(QUESTION_1, NOW_QUESTION_1),
+            """\
+20261003-slugify-transliterate-question · runbook-task-cycle · waiting_for_human
+✓ preflight     light    0:39  clean: true
+✓ implement     strong   6:12
+✓ checks        light    0:42  passed: false
+✗ fix-checks    strong   0:08  interrupted
+✓ fix-checks-2  strong   2:13  fixed: true
+✓ checks-2      light    0:36  passed: true
+✓ review-a      strong   4:36  findings: 2
+✓ review-b      second   2:48  findings: 2
+✓ triage        top      3:36  to_fix: 3
+✓ fix           strong   5:18
+✓ verify        strong   3:43  unresolved: 1, passed: true
+✓ fix-2         strong   3:48
+✓ verify-2      strong   3:17  unresolved: 1, passed: true
+? ask-rounds             2:30  waiting for the human""",
+        )
+
+    def test_running_run(self) -> None:
+        self.assertEqual(
+            view.status_text(RUNNING_1, NOW_RUNNING_1),
+            """\
+20261003-slugify-transliterate-running · runbook-task-cycle · running
+✓ preflight     light    0:39  clean: true
+✓ implement     strong   6:12
+✓ checks        light    0:42  passed: false
+✗ fix-checks    strong   0:08  interrupted
+✓ fix-checks-2  strong   2:13  fixed: true
+✓ checks-2      light    0:36  passed: true
+● review-a      strong   3:24
+✓ review-b      second   2:49  findings: 2""",
+        )
+
+    def test_tail_from_the_command_line(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(view.main([READY_1, '--status', '--tail', '2']), 0)
+        self.assertEqual(
+            out.getvalue().splitlines()[1:],
+            ['… 7 rows above', '✓ verify     unresolved: 0, passed: true', '✓ polish     passed: true'],
+        )
+
+    def test_section_with_its_files_and_log_lines(self) -> None:
+        snap = view.snapshot(QUESTION_1, NOW_QUESTION_1)
+        self.assertEqual(snap['run_files'], ['brief.md', 'profile.md', 'progress.md'])
+        calls = {c['label']: c for c in snap['calls']}
+        self.assertEqual(
+            calls['fix-checks-2'],
+            {
+                'label': 'fix-checks-2',
+                'name': 'fix-checks-2',
+                'status': 'done',
+                'mark': '✓',
+                'executor': 'strong',
+                'started_at': '2026-10-03T20:54:36Z',
+                'ended_at': '2026-10-03T20:56:49Z',
+                'note': 'fixed: true',
+                'files': ['04-fix-checks.md'],
+                'log': ['- fix-checks-2: launched', '- fix-checks-2: {"status": "done", "fixed": true}'],
+            },
+        )
+        self.assertEqual((calls['fix-checks']['status'], calls['fix-checks']['files']), ('interrupted', []))
+        # `- checks: python3 -m unittest` above `## Log` is an input, not a line of the section checks.
+        self.assertEqual(
+            calls['checks']['log'], ['- checks: launched', '- checks: {"status": "done", "passed": false}']
+        )
+        row = next(r for r in snap['rows'] if r['id'] == 'fix-checks-2')
+        self.assertEqual(
+            (row['type'], row['group'], row['depth'], row['attempts']), ('call', None, 0, ['fix-checks-2'])
+        )
+
+    def test_waiting_section(self) -> None:
+        snap = view.snapshot(QUESTION_1, NOW_QUESTION_1)
+        row = snap['rows'][-1]
+        self.assertEqual(
+            {k: row[k] for k in ('id', 'label', 'status', 'mark', 'executor', 'open', 'note', 'attempts')},
+            {
+                'id': 'ask-rounds',
+                'label': 'ask-rounds',
+                'status': 'waiting',
+                'mark': '?',
+                'executor': None,
+                'open': True,
+                'note': 'waiting for the human',
+                'attempts': ['ask-rounds'],
+            },
+        )
+        waiting = snap['calls'][-1]
+        self.assertEqual((waiting['status'], waiting['files']), ('waiting', []))
+        self.assertTrue(waiting['log'][0].startswith('- ask-rounds: asked: Fix rounds are spent.'))
+
+    def test_notes_of_failed_and_answered_sections(self) -> None:
+        def section(sid: str, status: str, reply: dict | None, note: str | None, answer: str | None = None) -> dict:
+            return {'id': sid, 'name': sid, 'status': status, 'reply': reply, 'note': note, 'answer': answer}
+
+        state = view.from_format_1(
+            {
+                'sections': [
+                    section('verify', 'failed', {'status': 'failed', 'reason': 'tests red'}, None),
+                    section(
+                        'fix', 'failed', {'status': 'blocked', 'reason': 'no repo'}, "relaunched on the human's yes"
+                    ),
+                    section('push', 'blocked', {'status': 'blocked', 'reason': 'no remote'}, None),
+                    section('ask-dirty', 'done', None, 'continue', 'continue, and the Steps too'),
+                    section('ask-rounds', 'done', {'choice': 'more rounds', 'rounds': 1}, 'more rounds', 'one more'),
+                ]
+            },
+            [],
+        )
+        self.assertEqual(
+            [(r['label'], r['mark'], r['note']) for r in view.layout(state)],
+            [
+                ('verify', '✗', 'tests red'),
+                ('fix', '✗', "relaunched on the human's yes"),
+                ('push', '!', 'no remote'),
+                ('ask-dirty', '✓', 'continue'),
+                ('ask-rounds', '✓', 'more rounds, rounds: 1'),
+            ],
+        )
+
+    def test_latest_run_of_either_format_in_a_runs_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for fixture, mtime in ((READY, 1_000_000_000), (QUESTION_1, 2_000_000_000)):
+                run = os.path.join(tmp, os.path.basename(fixture))
+                shutil.copytree(fixture, run)
+                os.utime(os.path.join(run, 'state.json'), (mtime, mtime))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(view.main([tmp, '--status', '--tail', '1']), 0)
+            self.assertTrue(out.getvalue().startswith('20261003-slugify-transliterate-question · '))
 
 
 class FilesTest(RunDirTestCase):
@@ -279,6 +430,71 @@ class FilesTest(RunDirTestCase):
             {
                 'main/a': ['- main/a: launched', '- main/a@1: interrupted', '- main/a@01: relaunched'],
                 'main/a@2': ['- main/a@02: done'],
+            },
+        )
+
+    def test_logs_keep_earlier_lines_past_a_log_heading_in_human_words(self) -> None:
+        lines = [
+            '- repo: x',
+            '## Log',
+            '- main/build: launched',
+            '- ask: asked: Proceed?',
+            '- main/ask: answered: continue',
+            '- main/ask: said: Please include',
+            '## Log',
+            'in the document',
+            '- ask: said: Again',
+            '## Log',
+            '- main/build: done',
+        ]
+        self.assertEqual(
+            view.call_logs(lines, ['main/build', 'main/ask', 'ask']),
+            {
+                'main/build': ['- main/build: launched', '- main/build: done'],
+                'main/ask': ['- main/ask: answered: continue', '- main/ask: said: Please include'],
+                'ask': ['- ask: asked: Proceed?', '- ask: said: Again'],
+            },
+        )
+
+    def test_logs_find_the_header_past_a_log_heading_in_an_input(self) -> None:
+        inputs = {'task': 'add a section\n## Log\nto the README\n- build: make', 'rounds': 2}
+        lines = [
+            '# Run r',
+            '',
+            'Runbook `rb`. State in `state.json`. Inputs:',
+            '',
+            '- task: add a section',
+            '## Log',
+            'to the README',
+            '- build: make',
+            '- rounds: 2',
+            '',
+            '## Log',
+            '',
+            '- build: launched',
+            '- build: said: see',
+            '## Log',
+            '- build: done',
+        ]
+        self.assertEqual(
+            view.call_logs(lines, ['build'], inputs),
+            {'build': ['- build: launched', '- build: said: see', '- build: done']},
+        )
+
+    def test_logs_match_format_1_ids_as_written(self) -> None:
+        lines = [
+            '- a: b: launched',
+            '- a@1: launched',
+            '- a@02: launched',
+            '- a: done',
+        ]
+        self.assertEqual(
+            view.call_logs(lines, ['a', 'a: b', 'a@1', 'a@02']),
+            {
+                'a': ['- a: b: launched', '- a: done'],
+                'a: b': ['- a: b: launched'],
+                'a@1': ['- a@1: launched'],
+                'a@02': ['- a@02: launched'],
             },
         )
 
@@ -585,10 +801,10 @@ class ServerTest(RunDirTestCase):
         self.assertEqual(self.get('/nope')[0], 404)
         self.write('state.json', '{"runbook": ')
         self.assertEqual(self.get('/api/state')[0], 503)
-        self.write('state.json', json.dumps(FORMAT_1))
+        self.write('state.json', json.dumps({'format': 3}))
         status, _, body = self.get('/api/state')
         self.assertEqual(status, 409)
-        self.assertIn(b'is format 1, from runbook.py 1.x', body)
+        self.assertIn(b'is format 3, from agent_runbooks.py 3.x', body)
 
     def test_page_runs_under_its_csp(self) -> None:
         with urllib.request.urlopen(self.server.url) as res:

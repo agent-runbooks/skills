@@ -5,7 +5,7 @@ description: "Shows the progress of a runbook run: a text status of its steps fo
 
 # Runbook viewer
 
-`<viewer>` is the directory this `SKILL.md` was loaded from. `view.py` only reads the run directory.
+`<viewer>` is the directory this `SKILL.md` was loaded from. `view.py` shows runs of engine 1.x and 2.x, and only reads the run directory.
 
 ## During a run
 

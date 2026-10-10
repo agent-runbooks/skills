@@ -41,7 +41,7 @@ In the chat the orchestrator shows only the last 10 rows, so a long run doesn't 
   · [docs]  not started
 ```
 
-The viewer reads runs of engine 2 only. For a run started with engine 1.x it says so and stops.
+The viewer reads runs of engine 1.x and 2.x.
 
 ## The page
 
