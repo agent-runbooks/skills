@@ -24,7 +24,7 @@ A runbook is written ahead of time, for a procedure that will come up again: the
 
 ## You can read it
 
-The steps are prompt files, the flow is a step per line with its branches next to it. A reviewer reads the prompts as prompts and the flow as a list. The cold read in [`review-checklist.md`](../skills/agent-runbook-authoring/references/review-checklist.md) checks that a model reads it the same way.
+The steps are prompt files, and the flow is one short Python function that calls them: a loop is a `while`, a branch an `if`, steps that run together a `parallel(...)`. A reviewer reads the prompts as prompts and the flow as a page of control flow with nothing else in it. The cold read in [`review-checklist.md`](../skills/agent-runbook-authoring/references/review-checklist.md) checks that a model reads it the same way.
 
 In a workflow script or an orchestrator app the prompts are strings inside the code, and the control flow is the code. Reviewing one is reading a program.
 
@@ -71,7 +71,7 @@ The run is a conversation in the session the human already has open. A human ste
 ## Where a script fits better
 
 - **One-off jobs.** A script is written for the task in front of the agent and run once. A runbook for a single job costs more to write than the job returns, see [Written once, run many times](#written-once-run-many-times).
-- **Mass jobs.** A typical procedure, a dozen steps with a review loop and a human step, fits the flow language with room to spare: it branches on a few typed fields of a reply, loops within a budget and joins parallel steps with `after`. A job like porting a whole project to another language, hundreds of agents over hundreds of files, is where a script earns its keep: a Claude Code workflow fans out over up to 1,000 agents a run and loops on anything JavaScript can test.
+- **Mass jobs.** A typical procedure, a dozen steps with a review loop and a human step, fits the flow language with room to spare: it branches on a few typed fields of a reply, loops within a budget, runs steps in parallel and runs a step for each item of a list, up to fifty unless the author raises the limit. A job like porting a whole project to another language, hundreds of agents over hundreds of files, is where a script earns its keep: a Claude Code workflow fans out over up to 1,000 agents a run and loops on anything JavaScript can test.
 - **Spending limits.** A Copilot workflow caps a run by subagents, time and AI credits. A runbook has none.
 - **Guarantees.** A script enforces its rules; in a runbook they hold as far as the model follows them, see [Limits](../README.md#compatibility-and-limits). Current models follow them well.
 
