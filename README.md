@@ -6,23 +6,33 @@ A **runbook** lets you give an agent session a procedure to run step by step thr
 
 ## How it works
 
-The steps are prompt files. The transitions live in `flow.py`, a few dozen lines of Python on a small engine copied into every runbook, so a finished runbook runs where nothing from this repository is installed. The orchestrating session launches what `flow.py` prints, waits, and hands each executor's JSON reply back to it; it never reasons about what comes next. Steps pass work to each other through files in a run directory, so the orchestrator's context stays small, and an interrupted run resumes from `state.json`.
+The steps are prompt files. The flow lives in `flow.py`: the steps declared, and one Python generator that calls them, a few dozen lines on a small engine copied into every runbook, so a finished runbook runs where nothing from this repository is installed. The orchestrating session launches what `flow.py` prints, waits, and hands each executor's JSON reply back to it; it never reasons about what comes next. Steps pass work to each other through files in a run directory, so the orchestrator's context stays small, and an interrupted run resumes from `state.json`.
 
-One step of a flow, with its branches next to it:
+One step, and the flow that calls it:
 
 ```python
-rb.step(
-    'implement',
-    executor='coder',
-    prompt='prompts/01-implement.md',
-    writes=['implement.md'],
-    reply={'checks_passed': bool},
-    next=lambda r, s: (
-        parallel('review-a', 'review-b') if r.checks_passed
-        else 'fix' if s.done('fix') < s.inputs.maxFixRounds
-        else end('failed', 'read <run>/implement.md')
-    ),
+review = rb.step(
+    'review',
+    executor='reviewer',
+    prompt='prompts/02-review.md',
+    reads=['implement.md', 'fix.md'],
+    writes=['review.md'],
+    reply={'findings': int},
 )
+
+
+@rb.flow
+def main(ctx):
+    yield implement()
+    rounds = 0
+    while True:
+        reviews = yield parallel('reviews', a=review(), b=review(executor='other'))
+        if reviews.a.findings + reviews.b.findings == 0:
+            return end('ready', 'read <run>/implement.md')
+        if rounds >= ctx.inputs.maxFixRounds:
+            return end('needs_attention', 'read <run>/progress.md')
+        yield fix(reviews=reviews)
+        rounds += 1
 ```
 
 A step names its executor by description, such as "the cheapest fast model" or "a model from another vendor". The orchestrating session maps it onto what it can launch: its own subagents, or, with [throng-mcp](https://github.com/agent-runbooks/throng-mcp), Claude Code, Codex or OpenCode, so one run can mix vendors.

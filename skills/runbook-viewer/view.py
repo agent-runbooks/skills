@@ -17,6 +17,7 @@ if sys.version_info < (3, 9):
     sys.exit(f'view.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -31,9 +32,20 @@ from urllib.parse import parse_qs, urlsplit
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = 'state.json'
 PROGRESS = 'progress.md'
+FORMAT = 2
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
-MARKS = {'done': '✓', 'running': '●', 'waiting_for_human': '?', 'failed': '✗', 'blocked': '!'}
-OPEN = ('running', 'waiting_for_human')
+MARKS = {
+    'done': '✓',
+    'running': '●',
+    'waiting': '?',
+    'failed': '✗',
+    'interrupted': '✗',
+    'cancelled': '✗',
+    'blocked': '!',
+}
+OPEN = ('running', 'waiting')
+# The records that get a line: groups and items have none, the addresses of their calls show the nesting.
+LAUNCHES = ('step', 'human')
 WAITING = 'waiting for the human'
 STATIC = {
     '/': ('page.html', 'text/html; charset=utf-8'),
@@ -58,6 +70,10 @@ class StateUnreadable(Exception):
     """state.json is missing or not valid JSON at the moment, as when the engine is rewriting it."""
 
 
+class WrongFormat(Exception):
+    """state.json was written by an engine whose format this viewer does not read."""
+
+
 # ---------- the run directory ----------
 
 
@@ -75,14 +91,23 @@ def find_run(path: str) -> str:
 
 
 def read_state(run: str) -> dict[str, Any]:
-    """The contents of state.json."""
+    """The contents of state.json, refused unless it is format 2. A state without `format` is from engine 1.x."""
+    path = os.path.join(run, STATE)
     try:
-        with open(os.path.join(run, STATE), encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         raise StateUnreadable(str(e)) from e
-    if not isinstance(data, dict) or not isinstance(data.get('sections'), list):
-        raise StateUnreadable(f'{STATE}: no sections')
+    if not isinstance(data, dict):
+        raise StateUnreadable(f'{STATE}: not a JSON object')
+    found = data.get('format', 1)
+    if found != FORMAT:
+        engine = f'runbook.py {found}.x' if type(found) is int else 'an unknown engine'
+        raise WrongFormat(
+            f'{path} is format {found}, from {engine}; this viewer reads format {FORMAT}, from runbook.py {FORMAT}.x'
+        )
+    if not isinstance(data.get('calls'), list):
+        raise StateUnreadable(f'{STATE}: no calls')
     return data
 
 
@@ -111,50 +136,93 @@ def list_files(run: str) -> list[dict[str, Any]]:
     return files
 
 
-def section_files(names: list[str], count: int) -> tuple[list[list[str]], list[str]]:
-    """Splits file names into each section's outputs, <NN>-… with NN its index, and the run's own files."""
-    by_section: list[list[str]] = [[] for _ in range(count)]
-    rest = []
-    for name in names:
-        m = re.match(r'(\d{2,})-', name)
-        index = int(m.group(1)) if m else -1
-        if m and index < count and m.group(1) == f'{index:02d}':
-            by_section[index].append(name)
-        elif name != STATE:
-            rest.append(name)
-    return by_section, rest
+def launches(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The attempts of steps and human steps, in the order of state.json."""
+    return [c for c in state['calls'] if isinstance(c, dict) and c.get('kind') in LAUNCHES]
 
 
-def section_logs(progress: list[str], ids: list[str]) -> dict[str, list[str]]:
-    """The lines of progress.md grouped by section, in one pass over the log."""
-    logs: dict[str, list[str]] = {sid: [] for sid in ids}
+def label(call: dict[str, Any]) -> str:
+    """The attempt's address as commands and progress.md name it: main/fix, then main/fix@2."""
+    attempt = call.get('attempt', 1)
+    return str(call.get('id', '')) + (f'@{attempt}' if attempt != 1 else '')
+
+
+def mark(call: dict[str, Any]) -> str:
+    """The attempt's mark, blank for a status this viewer does not know."""
+    return MARKS.get(str(call.get('status')), ' ')
+
+
+def short_label(call: dict[str, Any]) -> str:
+    """The label without the leading main/, as the status and the page show it."""
+    full = label(call)
+    return full[len('main/') :] if full.startswith('main/') else full
+
+
+def call_files(call: dict[str, Any], names: set[str]) -> list[str]:
+    """The files the attempt was told to write that are in the run directory: what a done attempt wrote, or what a
+    running or failed one has written so far. Matched by name, so a run directory moved since keeps its files."""
+    paths = [*(call.get('writes') or {}).values(), *(call.get('files') or {}).values()]
+    found = dict.fromkeys(os.path.basename(p) for p in paths if isinstance(p, str))
+    return [name for name in found if name in names]
+
+
+def canonical(name: str) -> str:
+    """The label of the attempt a line names: the engine reads main/fix@1 and main/fix@01 as main/fix and main/fix@02
+    as main/fix@2, and a log written before engine 2.0.0 carried a command's label as typed."""
+    match = re.fullmatch(r'(.*)@([0-9]+)', name)
+    if not match:
+        return name
+    attempt = int(match.group(2))
+    return match.group(1) + (f'@{attempt}' if attempt != 1 else '')
+
+
+def call_logs(progress: list[str], labels: list[str]) -> dict[str, list[str]]:
+    """The lines of progress.md grouped by the attempt they name, in one pass over the log."""
+    logs: dict[str, list[str]] = {name: [] for name in labels}
     for line in progress:
-        if not line.startswith('- '):
-            continue
-        index = line.find(': ', 2)
-        while index != -1:
-            lines = logs.get(line[2:index])
+        end = line.find(': ', 2) if line.startswith('- ') else -1
+        if end != -1:
+            lines = logs.get(canonical(line[2:end]))
             if lines is not None:
                 lines.append(line)
-            index = line.find(': ', index + 2)
     return logs
 
 
 def snapshot(run: str, now: datetime) -> dict[str, Any]:
-    """What /api/state returns: the state, the files, and per section its files and log lines."""
+    """What /api/state returns: the state, the files, one entry per attempt with the fields of its status line, its
+    files and log lines, and the run's own files: the inputs, progress.md and the foreach indexes, whatever no attempt
+    was told to write."""
     state = read_state(run)
     files = list_files(run)
-    progress = read_progress(run)
-    logs = section_logs(progress, [s['id'] for s in state['sections']])
-    by_section, run_files = section_files([f['name'] for f in files], len(state['sections']))
-    sections = [{'id': s['id'], 'files': by_section[i], 'log': logs[s['id']]} for i, s in enumerate(state['sections'])]
+    names = {f['name'] for f in files}
+    calls = launches(state)
+    logs = call_logs(read_progress(run), [label(c) for c in calls])
+    entries = []
+    claimed = set()
+    for c in calls:
+        outputs = call_files(c, names)
+        claimed.update(outputs)
+        entries.append(
+            {
+                'label': label(c),
+                'name': short_label(c),
+                'status': c.get('status'),
+                'mark': mark(c),
+                'executor': c.get('executor'),
+                'started_at': c.get('started_at'),
+                'ended_at': c.get('ended_at'),
+                'note': summary(c),
+                'files': outputs,
+                'log': logs[label(c)],
+            }
+        )
     return {
         'name': os.path.basename(run),
         'now': now.strftime(TIME_FORMAT),
         'state': state,
         'files': files,
-        'sections': sections,
-        'run_files': run_files,
+        'calls': entries,
+        'run_files': [f['name'] for f in files if f['name'] != STATE and f['name'] not in claimed],
     }
 
 
@@ -182,10 +250,10 @@ def parse_time(value: Any) -> datetime | None:
         return None
 
 
-def duration(section: dict[str, Any], now: datetime) -> str:
-    """m:ss or h:mm:ss from started_at to ended_at, or to now for an open section; empty without timestamps."""
-    start = parse_time(section.get('started_at'))
-    stop = now if section.get('status') in OPEN else parse_time(section.get('ended_at'))
+def duration(call: dict[str, Any], now: datetime) -> str:
+    """m:ss or h:mm:ss from started_at to ended_at, or to now for an open attempt; empty without timestamps."""
+    start = parse_time(call.get('started_at'))
+    stop = now if call.get('status') in OPEN else parse_time(call.get('ended_at'))
     if start is None or stop is None:
         return ''
     seconds = max(0, int((stop - start).total_seconds()))
@@ -194,33 +262,27 @@ def duration(section: dict[str, Any], now: datetime) -> str:
     return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
 
 
-def summary(section: dict[str, Any]) -> str:
-    """The reply fields of a done step, the note or reason of a failed one, the choice of an answered question."""
-    status = section.get('status')
-    reply = section.get('reply') or {}
-    note = section.get('note')
-    if status == 'waiting_for_human':
+def summary(call: dict[str, Any]) -> str:
+    """The reply fields of a done step, the human's choice and fields, the reason of a failed or blocked one."""
+    status = call.get('status')
+    reply = dict(call.get('reply') or {})
+    if status == 'waiting':
         return WAITING
+    if status in ('interrupted', 'cancelled'):
+        return status
     if status in ('failed', 'blocked'):
-        return note or str(reply.get('reason', ''))
-    if status == 'done' and not reply:
-        return note or ''
-    if status == 'done':
-        return ', '.join(
-            f'{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
-            for k, v in reply.items()
-            if k != 'status'
-        )
-    return ''
+        return str(reply.get('reason', ''))
+    if status != 'done':
+        return ''
+    parts = [str(reply.pop('choice'))] if call.get('kind') == 'human' and 'choice' in reply else []
+    parts += [f'{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}' for k, v in reply.items()]
+    return ', '.join(parts)
 
 
 def status_text(run: str, now: datetime) -> str:
-    """The text status: a header line, then one aligned line per section."""
+    """The text status: a header line, then one aligned line per attempt of a step or a human step."""
     state = read_state(run)
-    rows = [
-        [MARKS.get(s.get('status'), ' '), s.get('id', ''), s.get('executor') or '', duration(s, now), summary(s)]
-        for s in state['sections']
-    ]
+    rows = [[mark(c), short_label(c), c.get('executor') or '', duration(c, now), summary(c)] for c in launches(state)]
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(len(rows[0]))] if rows else []
     if widths and widths[3]:
         widths[3] = max(widths[3], 5)
@@ -262,6 +324,9 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps(snapshot(server.run, datetime.now(timezone.utc)), ensure_ascii=False)
             except StateUnreadable as e:
                 self.send(HTTPStatus.SERVICE_UNAVAILABLE, str(e).encode(), 'text/plain; charset=utf-8')
+                return
+            except WrongFormat as e:
+                self.send(HTTPStatus.CONFLICT, str(e).encode(), 'text/plain; charset=utf-8')
                 return
             self.send(HTTPStatus.OK, body.encode(), 'application/json; charset=utf-8')
         elif url.path == '/api/file':
@@ -338,7 +403,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.status:
             print(status_text(run, datetime.now(timezone.utc)))
             return 0
-    except (RunError, StateUnreadable) as e:
+        with contextlib.suppress(StateUnreadable):
+            read_state(run)
+    except (RunError, StateUnreadable, WrongFormat) as e:
         print(f'view.py: {e}', file=sys.stderr)
         return 2
     try:

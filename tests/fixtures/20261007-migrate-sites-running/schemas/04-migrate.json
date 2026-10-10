@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "failed",
+        "blocked"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "risky": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "reason",
+    "risky"
+  ],
+  "additionalProperties": false
+}

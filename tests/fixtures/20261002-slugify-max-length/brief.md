@@ -1,1 +1,0 @@
-Add an optional `max_length` parameter to `slugify`. When it is given, the slug is at most that many characters long and is cut on a word boundary, never in the middle of a word. Without it, `slugify` behaves as before.

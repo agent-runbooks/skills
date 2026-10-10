@@ -1,6 +1,6 @@
 ---
 name: runbook-viewer
-description: "Shows the progress of a runbook run: a text status of its sections for the chat, and a page on localhost with each step's log lines and output files. Load it when the human asks for the progress or status of a runbook run or to read a step's output, and when a runbook's Execution rules point here."
+description: "Shows the progress of a runbook run: a text status of its steps for the chat, and a page on localhost with each step's log lines and output files. Load it when the human asks for the progress or status of a runbook run or to read a step's output, and when a runbook's Execution rules point here."
 ---
 
 # Runbook viewer

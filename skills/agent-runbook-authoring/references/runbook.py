@@ -1,17 +1,18 @@
 """Engine of a runbook run: state in state.json, a text log in progress.md, next actions on stdout.
 
-A runbook's flow.py declares inputs, executors and steps with this module and ends with rb.main().
-The orchestrator then talks to flow.py:
+A runbook's flow.py declares inputs, executors and steps with this module, writes the flow as one generator under
+@rb.flow, and ends with rb.main(). The orchestrator then talks to flow.py:
 
     flow.py <run> start '<given inputs as JSON>'   new run: creates the directory, prints what to launch
-    flow.py <run> reply <section> '<reply JSON>'   a step finished: records the reply, prints what follows
-    flow.py <run> answer <section> '<choice>'      the human answered a human step
-    flow.py <run> interrupted <section>            a running step's executor is gone: relaunch it
-    flow.py <run> relaunch <section>               the human said yes to relaunching a failed side-effect step
+    flow.py <run> reply <call> '<reply JSON>'      a step finished: records the reply, prints what follows
+    flow.py <run> answer <call> '<choice>'         the human answered a human step
+    flow.py <run> interrupted <call>               a running step's executor is gone: launch it again
+    flow.py <run> relaunch <call>                  the human said yes to relaunching a failed side-effect step
     flow.py <run> log '<text>'                     add a line to progress.md
     flow.py <run>                                  nothing new: print what is pending
     flow.py --check                                validate the declarations
 
+<call> is the address flow.py printed with the launch or the question, such as main/review#2 or main/review@2.
 `answer` takes the human's words as a last argument, and a JSON object in place of the choice when the step
 declares reply fields. One argument may be `-` to read it from stdin, for text with quotes in it.
 
@@ -21,7 +22,7 @@ Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the fl
 
 from __future__ import annotations
 
-__version__ = '1.4.3'
+__version__ = '2.0.0'
 
 import sys
 
@@ -29,42 +30,44 @@ import sys
 if sys.version_info < (3, 9):
     sys.exit(f'runbook.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
 
+import inspect
 import json
 import os
 import re
 import shlex
-from collections import deque
-from collections.abc import Callable, Iterable
+import traceback
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args
 
 if TYPE_CHECKING:
     from typing import TypeAlias  # 3.10+; annotations are never evaluated at run time
 
 
-# ---------- targets ----------
+class FlowError(Exception):
+    """A defect of flow.py found while the flow runs: a generator raised, or yielded or passed what it cannot."""
+
+
+class CommandError(Exception):
+    """A refused command, with a message for the orchestrator."""
+
+
+# ---------- the flow ----------
 
 
 @dataclass(frozen=True)
 class End:
-    """A target that ends the run with this status; report is what the human is told to read."""
+    """What the flow returns to end the run with this status; report is what the human is told to read."""
 
     status: str
     report: str = ''
 
 
-@dataclass(frozen=True)
-class Parallel:
-    """A target that launches several steps at once."""
-
-    steps: tuple[str, ...]
-
-
-# How a failed or blocked step without on_failure, or a failed join, ends the run.
+# How a failure that no generator handles ends the run.
 FAILED_END = End('failed', 'read <run>/progress.md')
+NO_REASON = 'no reason given'
 
 
 def end(status: str, report: str = '') -> End:
@@ -72,65 +75,207 @@ def end(status: str, report: str = '') -> End:
     return End(status, report)
 
 
-def parallel(*steps: str) -> Parallel:
-    """Launch these steps together. They write different files, and at most one changes the tree."""
-    return Parallel(steps)
+class StepFailed(Exception):
+    """A failed or blocked call, thrown into the flow at its yield.
+
+    id: the address of the call, or of the generator that raised it. reply: `status`, `reason` and any fields.
+    A generator raises it to fail its branch or item: `raise StepFailed('the site is still down')`.
+    """
+
+    def __init__(self, reason: str = '', *, id: str = '', reply: dict[str, Any] | None = None) -> None:
+        self.id = id
+        self.reply: dict[str, Any] = reply if reply is not None else {'status': 'failed', 'reason': reason or NO_REASON}
+        super().__init__(self.reason)
+
+    @property
+    def status(self) -> str:
+        return self.reply.get('status', 'failed')
+
+    @property
+    def reason(self) -> str:
+        return self.reply.get('reason') or NO_REASON
 
 
-Target: TypeAlias = 'str | End | Parallel | None'
-Route: TypeAlias = 'Target | Callable[..., Target]'
+class Context:
+    """What every generator of the flow gets first: `ctx.inputs.<name>` are the run's inputs."""
+
+    def __init__(self, inputs: dict[str, Any]) -> None:
+        self.inputs = SimpleNamespace(**inputs)
 
 
-class FlowError(Exception):
-    """A function declared in flow.py raised: a defect of the runbook, not of the run."""
+@dataclass(frozen=True)
+class Call:
+    """A step called in the flow: what `yield step(...)` hands the engine. inputs: the keyword arguments."""
+
+    step: Step | HumanStep
+    inputs: dict[str, Any]
+    executor: str | None = None
 
 
-class CommandError(Exception):
-    """A refused command, with a message for the orchestrator."""
+Request: TypeAlias = 'Call | Parallel | Foreach'
+Chain: TypeAlias = 'Callable[[Context], Generator[Request, Any, Any]]'
+ItemBody: TypeAlias = 'Callable[[Context, SimpleNamespace], Generator[Request, Any, Any]]'
+FlowFunction = TypeVar('FlowFunction', bound=Callable[[Context], Generator[Any, Any, End]])
+OnItemFailure = Literal['fail', 'skip']
+
+# Names on a result the engine sets: a reply field or a branch key cannot take them.
+RESERVED = ('id', 'files', 'status', 'reason', 'choice')
+# Step, group and item names: they are parts of an address, where / # @ [ ] have a meaning.
+NAME = re.compile(r'[A-Za-z0-9_.-]+')
 
 
-def _resolve(route: Any, what: str, *args: Any) -> Any:
-    """The route itself, or what it returns when it is a function; `what` names it if it raises."""
-    if not callable(route):
-        return route
-    try:
-        return route(*args)
-    except Exception as e:
-        raise FlowError(f'{what} raised {type(e).__name__}: {e}') from e
+@dataclass(frozen=True)
+class Parallel:
+    """Branches launched together; see parallel()."""
+
+    name: str
+    branches: dict[str, Call | Chain]
+
+
+@dataclass(frozen=True)
+class Foreach:
+    """A body run for each item of a JSON array; see foreach()."""
+
+    name: str
+    over: str
+    body: Call | ItemBody
+    max_concurrent: int
+    max_items: int
+    on_item_failure: OnItemFailure
+
+
+def parallel(name: str, /, **branches: Call | Chain) -> Parallel:
+    """Launch the branches together: `r = yield parallel('reviews', a=review_a(), b=chain)`.
+
+    A branch is a step call, or a generator function (ctx) whose return value is the branch's result. The yield
+    returns once every branch is done, with one attribute per branch key.
+    """
+    where = f'parallel({name!r})'
+    _check_name(name, where)
+    if not branches:
+        raise FlowError(f'{where} has no branches')
+    for key, branch in branches.items():
+        if key in RESERVED:
+            raise FlowError(f'{where}: branch {key!r} is reserved: {", ".join(RESERVED)} are attributes of a result')
+        _check_name(key, f'{where}: branch {key!r}')
+        if not isinstance(branch, Call) and not inspect.isgeneratorfunction(branch):
+            raise FlowError(f'{where}: branch {key!r} is {branch!r}, neither a step call nor a generator function')
+    return Parallel(name, dict(branches))
+
+
+def foreach(
+    name: str,
+    /,
+    *,
+    over: str,
+    body: Call | ItemBody,
+    max_concurrent: int = 4,
+    max_items: int = 50,
+    on_item_failure: OnItemFailure = 'fail',
+) -> Foreach:
+    """Run body for each item of the JSON array in the file `over`: `done = yield foreach('migrate', ...)`.
+
+    over: a file name, resolved as `reads` are, or the path of a result's file. Each item is an object with a
+    unique `key` of letters, digits, _ . -; more than max_items fail the foreach. body: a generator function
+    (ctx, item) whose return value is the item's reply, or a step call. At most max_concurrent items run at once.
+    on_item_failure: 'fail' starts no new item after a failed one and fails the foreach once the running ones
+    end; 'skip' keeps the failure as the item's outcome and goes on. The yield returns once every item has ended,
+    with `items`: key, status, reply, reason and files of each, in the order of the file.
+    """
+    where = f'foreach({name!r})'
+    _check_name(name, where)
+    if not isinstance(over, str) or not over:
+        raise FlowError(f'{where}: over is {over!r}, not a file name')
+    if not isinstance(body, Call) and not inspect.isgeneratorfunction(body):
+        raise FlowError(f'{where}: body is {body!r}, neither a step call nor a generator function')
+    for parameter, value in (('max_concurrent', max_concurrent), ('max_items', max_items)):
+        if not _is_of_type(value, int) or value < 1:
+            raise FlowError(f'{where}: {parameter} is {value!r}, not a whole number from 1')
+    if on_item_failure not in get_args(OnItemFailure):
+        raise FlowError(
+            f'{where}: on_item_failure is {on_item_failure!r}, not one of {", ".join(get_args(OnItemFailure))}'
+        )
+    return Foreach(name, over, body, max_concurrent, max_items, on_item_failure)
+
+
+def _check_name(name: Any, where: str) -> None:
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        raise FlowError(f'{where}: the name must be letters, digits, _ . -')
+
+
+# The results a yield returns. Their attributes are the flow's to read; the engine keeps no methods on them, so a
+# reply field can take any name but the reserved ones.
+
+
+class StepResult(SimpleNamespace):
+    """A done call: the reply's fields as attributes, `choice` for a human step, its address as `id`, and `files`,
+    name to path, what the launch wrote."""
+
+    id: str
+    files: dict[str, str]
+
+
+class ParallelResult(SimpleNamespace):
+    """A done parallel: one attribute per branch key, and its address as `id`."""
+
+    id: str
+
+
+class ForeachResult(SimpleNamespace):
+    """A done foreach: `items` in the order of the file, its address as `id`, and its index in `files`."""
+
+    id: str
+    files: dict[str, str]
+    items: list[ItemResult]
+
+
+class ItemResult(SimpleNamespace):
+    """One item of a foreach: key, status ('done', 'failed', 'cancelled' or 'not_started'), reply, reason, files."""
+
+    key: str
+    status: str
+    reply: Any
+    reason: str | None
+    files: dict[str, str]
+
+
+def _result_fields(result: StepResult) -> dict[str, Any]:
+    return {k: v for k, v in vars(result).items() if k not in ('id', 'files')}
 
 
 # ---------- declarations ----------
 
 
-@dataclass
+@dataclass(eq=False)
 class Step:
-    """A step an executor runs. Fields mirror the parameters of Runbook.step."""
+    """A step an executor runs. Fields mirror the parameters of Runbook.step. Calling it is a call for the flow."""
 
     name: str
-    executor: str | Callable[[State], str]
+    executor: str
     prompt: str
-    next: Route
     inputs: list[str | tuple[str, Any]] = field(default_factory=list)
     reply: dict[str, Any] = field(default_factory=dict)
     reads: list[str] = field(default_factory=list)
     writes: list[str] = field(default_factory=list)
-    after: list[str] = field(default_factory=list)
     side_effects: str | None = None
-    on_failure: Route = None
-    skip: Callable[[State], Target] | None = None
+
+    def __call__(self, *, executor: str | None = None, **inputs: Any) -> Call:
+        """A launch of this step. executor: a declared executor for this call. inputs: more lines of its message."""
+        return Call(self, inputs, executor)
 
 
-@dataclass
+@dataclass(eq=False)
 class HumanStep:
-    """A question to the human. Fields mirror the parameters of Runbook.human."""
+    """A question to the human. Fields mirror the parameters of Runbook.human. Calling it is a call for the flow."""
 
     name: str
     question: str
-    next: Route
     choices: list[str] = field(default_factory=list)
     reply: dict[str, Any] = field(default_factory=dict)
     writes: str | None = None
-    after: list[str] = field(default_factory=list)
+
+    def __call__(self) -> Call:
+        return Call(self, {})
 
     def match(self, answer: str) -> str | None:
         """The declared choice this answer names, or the answer itself when the step takes free text."""
@@ -152,69 +297,16 @@ def _writes(step: AnyStep) -> list[str]:
     return step.writes
 
 
-class State:
-    """What a `next` or `skip` function may ask about the run: `s.inputs.<name>`, `s.done(step)`, `s.failed(step)`,
-    `s.reply(step)`, `s.replies(step)`."""
-
-    def __init__(
-        self,
-        inputs: dict[str, Any],
-        done_count: dict[str, int],
-        latest: dict[str, Section] | None = None,
-        history: dict[str, list[Section]] | None = None,
-        failed_count: dict[str, int] | None = None,
-    ) -> None:
-        self.inputs = SimpleNamespace(**inputs)
-        self._done = done_count
-        self._failed = failed_count or {}
-        self._latest = latest or {}
-        self._history = history or {}
-
-    def done(self, step: str) -> int:
-        """How many sections of this step are done so far, the one just recorded included."""
-        return self._done.get(step, 0)
-
-    def failed(self, step: str) -> int:
-        """How many sections of this step ended failed or blocked so far, the one just recorded included.
-
-        Interrupted and relaunched sections are not counted.
-        """
-        return self._failed.get(step, 0)
-
-    def reply(self, step: str) -> SimpleNamespace | None:
-        """The reply of this step's latest section reached so far, if that section is done."""
-        section = self._latest.get(step)
-        if section is None or section.status is not Status.DONE:
-            return None
-        return SimpleNamespace(**section.fields())
-
-    def replies(self, step: str) -> list[SimpleNamespace]:
-        """The replies of this step's done sections reached so far, oldest first. For a human step, the answers."""
-        return [SimpleNamespace(**section.fields()) for section in self._history.get(step, [])]
-
-
 # ---------- run state ----------
 
-
-class Status(Enum):
-    """Status of a section in state.json."""
-
-    RUNNING = 'running'
-    WAITING_FOR_HUMAN = 'waiting_for_human'
-    DONE = 'done'
-    FAILED = 'failed'
-    BLOCKED = 'blocked'
-
-    @property
-    def is_open(self) -> bool:
-        return self in (Status.RUNNING, Status.WAITING_FOR_HUMAN)
-
-
-REPLY_STATUSES = (Status.DONE.value, Status.FAILED.value, Status.BLOCKED.value)
-NOTE_INTERRUPTED = 'interrupted'
+FORMAT = 2
+Kind = Literal['step', 'human', 'parallel', 'foreach', 'item']
+CallStatus = Literal['running', 'waiting', 'done', 'failed', 'blocked', 'cancelled', 'interrupted']
+OPEN: tuple[CallStatus, ...] = ('running', 'waiting')
+REPLY_STATUSES = ('done', 'failed', 'blocked')
 NOTE_RELAUNCHED = "relaunched on the human's yes"
-SUPERSEDED_NOTES = ('interrupted', 'relaunched')
-NO_REASON = 'no reason given'
+# A side-effect step whose question its group's failure dropped: never relaunched, the question withdrawn.
+NOTE_CANCELLED = 'cancelled with its group'
 # How many times an executor is asked to correct a reply that did not pass the check before the step is failed.
 CORRECTIONS = 1
 
@@ -224,73 +316,91 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-@dataclass
-class Section:
-    """One launch of a step: its id is the step's name, with a counter from the second launch on (fix, fix-2).
+LAUNCH_KEYS = ('executor', 'reply', 'note', 'answer', 'inputs', 'files_in', 'files', 'schema', 'writes')
+KIND_KEYS: dict[str, tuple[str, ...]] = {
+    'step': LAUNCH_KEYS,
+    'human': LAUNCH_KEYS,
+    'parallel': ('branches',),
+    'foreach': ('over', 'items', 'index', 'problem'),
+    'item': ('fields', 'reply', 'reason', 'files'),
+}
 
-    executor, started_at and ended_at are None in a state.json written before 1.1.0; executor is None for a human step.
-    invalid_replies: what the orchestrator passed that did not pass the check, as {'reply': raw, 'problem': ...}.
+
+@dataclass(eq=False)
+class CallRecord:
+    """One attempt of a call in state.json, at the address the flow yields it at; an interruption or a relaunch
+    opens the next attempt of the same address, and only the latest one is open.
+
+    A launch (kind step or human) holds the contract its executor was given: executor, inputs (the call's own),
+    files_in (name to the path it was told, None for absent), writes and the reply schema. invalid_replies: what the
+    orchestrator passed that did not pass the check, as {'reply': raw, 'problem': ...}. A parallel records how each
+    branch ended; a foreach the file it read, its items frozen when reached, its index, or the problem with the file;
+    an item its fields and its outcome: reply (the body's return value), reason and files.
     """
 
     id: str
-    name: str
-    status: Status
-    reply: dict[str, Any] | None = None
+    kind: Kind
+    step: str
+    status: CallStatus
+    attempt: int = 1
+    executor: str | None = None
+    reply: Any = None
     note: str | None = None
     answer: str | None = None
-    executor: str | None = None
+    inputs: dict[str, Any] = field(default_factory=dict)
+    files_in: dict[str, str | None] = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=dict)
+    schema: dict[str, Any] | None = None
+    writes: dict[str, str] = field(default_factory=dict)
+    branches: dict[str, str] | None = None
+    over: str | None = None
+    items: list[dict[str, Any]] | None = None
+    index: str | None = None
+    problem: str | None = None
+    fields: dict[str, Any] | None = None
+    reason: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
     invalid_replies: list[dict[str, str]] = field(default_factory=list)
+    # The record's place in state.json, which numbers its files. Not saved.
+    position: int = -1
 
     @property
-    def superseded(self) -> bool:
-        """Interrupted or relaunched: replay skips it, and the step launches again."""
-        return (self.note or '').startswith(SUPERSEDED_NOTES)
+    def label(self) -> str:
+        """The address with the attempt, as commands take it: main/review, then main/review@2."""
+        return self.id if self.attempt == 1 else f'{self.id}@{self.attempt}'
 
-    @property
-    def reason(self) -> str:
-        return (self.reply or {}).get('reason', '')
-
-    def fields(self) -> dict[str, Any]:
-        """What `next` and `s.reply` see: the reply, and for an answered human step its choice as `choice`."""
-        answered = {'choice': self.note} if self.answer is not None else {}
-        return {**answered, **(self.reply or {})}
-
-    def close(self, status: Status) -> None:
-        """Moves the section to status, stamping ended_at if it leaves an open status."""
-        if self.status.is_open and not status.is_open:
+    def close(self, status: CallStatus) -> None:
+        """Moves the record to status, stamping ended_at if it leaves an open status."""
+        if self.status in OPEN and status not in OPEN:
             self.ended_at = utc_now()
         self.status = status
 
     def to_json(self) -> dict[str, Any]:
-        return dict(
-            id=self.id,
-            name=self.name,
-            status=self.status.value,
-            reply=self.reply,
-            note=self.note,
-            answer=self.answer,
-            executor=self.executor,
-            started_at=self.started_at,
-            ended_at=self.ended_at,
-            invalid_replies=self.invalid_replies,
-        )
+        keys = ('id', 'attempt', 'kind', 'step', 'status', *KIND_KEYS[self.kind], 'started_at', 'ended_at')
+        data = {key: getattr(self, key) for key in keys}
+        if self.kind == 'step':
+            data['invalid_replies'] = self.invalid_replies
+        return data
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> Section:
-        return cls(
-            id=data['id'],
-            name=data['name'],
-            status=Status(data['status']),
-            reply=data['reply'],
-            note=data['note'],
-            answer=data.get('answer'),
-            executor=data.get('executor'),
-            started_at=data.get('started_at'),
-            ended_at=data.get('ended_at'),
-            invalid_replies=data.get('invalid_replies') or [],
+    def from_json(cls, data: dict[str, Any]) -> CallRecord:
+        if data.get('kind') not in KIND_KEYS or data.get('status') not in get_args(CallStatus):
+            raise CommandError(
+                f'state.json: call {data.get("id")!r} has kind {data.get("kind")!r} and status {data.get("status")!r}'
+            )
+        known = (
+            'id',
+            'attempt',
+            'kind',
+            'step',
+            'status',
+            *KIND_KEYS[data['kind']],
+            'started_at',
+            'ended_at',
+            'invalid_replies',
         )
+        return cls(**{key: data[key] for key in known if key in data})
 
 
 @dataclass
@@ -300,7 +410,7 @@ class RunState:
     runbook: str
     status: str
     inputs: dict[str, Any]
-    sections: list[Section]
+    calls: list[CallRecord]
 
     @staticmethod
     def path(run_dir: str) -> str:
@@ -313,74 +423,75 @@ class RunState:
             raise CommandError(f'{path}: not found')
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
-        return cls(
-            runbook=data['runbook'],
-            status=data['status'],
-            inputs=data['inputs'],
-            sections=[Section.from_json(s) for s in data['sections']],
-        )
+        if data.get('format') != FORMAT:
+            raise CommandError(
+                f'{path} is format {data.get("format", 1)}, and runbook.py {__version__} reads format {FORMAT}. '
+                'A run of another engine version does not load: start a new run.'
+            )
+        state = cls(runbook=data['runbook'], status=data['status'], inputs=data['inputs'], calls=[])
+        for record in data['calls']:
+            state.append(CallRecord.from_json(record))
+        return state
 
-    def save(self, run_dir: str) -> None:
+    def serialize(self) -> str:
+        """The file's text. A value that is not JSON is a defect of the flow, found before anything is written."""
         data = dict(
-            runbook=self.runbook, status=self.status, inputs=self.inputs, sections=[s.to_json() for s in self.sections]
+            format=FORMAT,
+            runbook=self.runbook,
+            status=self.status,
+            inputs=self.inputs,
+            calls=[c.to_json() for c in self.calls],
         )
-        text = json.dumps(data, ensure_ascii=False, indent=2)
+        try:
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError) as e:
+            raise FlowError(f'state.json cannot hold what the flow gave: {e}') from e
+
+    def save(self, run_dir: str, text: str | None = None) -> None:
+        text = self.serialize() if text is None else text
         path = self.path(run_dir)
         with open(path + '.tmp', 'w', encoding='utf-8') as f:
             f.write(text)
         os.replace(path + '.tmp', path)
 
-    def section(self, sid: str) -> Section:
-        for section in self.sections:
-            if section.id == sid:
-                return section
-        raise CommandError(f'no section {sid} in state.json')
+    def append(self, record: CallRecord) -> None:
+        record.position = len(self.calls)
+        self.calls.append(record)
 
-    def new_section(self, name: str, status: Status, executor: str | None = None) -> Section:
-        earlier = sum(1 for s in self.sections if s.name == name)
-        sid = f'{name}-{earlier + 1}' if earlier else name
-        section = Section(id=sid, name=name, status=status, executor=executor, started_at=utc_now())
-        self.sections.append(section)
-        return section
+    def find(self, label: str) -> CallRecord:
+        """The attempt a command names; refused unless it is the latest attempt of its address."""
+        match = re.fullmatch(r'(.*)@([0-9]+)', label)
+        address, attempt = (match.group(1), int(match.group(2))) if match else (label, 1)
+        named = latest = None
+        for record in self.calls:
+            if record.id == address:
+                latest = record
+                if record.attempt == attempt:
+                    named = record
+        if named is None or latest is None:
+            raise CommandError(f'no call {label} in state.json')
+        if named is not latest:
+            raise CommandError(
+                f'call {label} is a closed attempt ({named.status}); the latest attempt is {latest.label}'
+            )
+        return named
 
 
 class RunFiles:
-    """Step outputs in a run directory: a section writes <run>/<NN>-<name>, NN being its place among the sections."""
+    """Files in a run directory: a record writes <run>/<NN>-<name>, NN being its place in state.json."""
 
-    def __init__(self, steps: dict[str, AnyStep], run_dir: str, state: RunState) -> None:
+    def __init__(self, run_dir: str) -> None:
         self.run_dir = run_dir
-        self.state = state
-        self._writers: dict[str, set[str]] = {}
-        for step in steps.values():
-            for name in _writes(step):
-                self._writers.setdefault(name, set()).add(step.name)
 
-    def path(self, section: Section, name: str) -> str:
-        return os.path.join(self.run_dir, f'{self.state.sections.index(section):02d}-{name}')
+    def path(self, record: CallRecord, name: str) -> str:
+        return os.path.join(self.run_dir, f'{record.position:02d}-{name}')
 
-    def schema_path(self, step: str) -> str:
-        """Where the JSON schema of this step's reply is written for its executors."""
-        return os.path.join(self.run_dir, 'schemas', f'{step}.json')
+    def index_path(self, record: CallRecord) -> str:
+        return self.path(record, f'{record.step}.index.json')
 
-    def is_output(self, name: str) -> bool:
-        return name in self._writers
-
-    def latest(self, name: str, before: Section | None = None) -> str | None:
-        """The file a done section last wrote under this name, among the sections before `before`."""
-        end = self.state.sections.index(before) if before is not None else len(self.state.sections)
-        found = None
-        for i, section in enumerate(self.state.sections[:end]):
-            if section.status is Status.DONE and section.name in self._writers.get(name, ()):
-                found = os.path.join(self.run_dir, f'{i:02d}-{name}')
-        return found
-
-    def substitute(self, text: str) -> str:
-        """<run>/<output name> becomes the latest file of that name; any other <run> the run directory."""
-        for name in self._writers:
-            latest = self.latest(name)
-            if latest:
-                text = text.replace(f'<run>/{name}', latest)
-        return text.replace('<run>', self.run_dir)
+    def schema_path(self, record: CallRecord) -> str:
+        """Where the JSON schema of this attempt's reply is written for its executor: <run>/schemas/<NN>-<step>.json."""
+        return os.path.join(self.run_dir, 'schemas', f'{record.position:02d}-{record.step}.json')
 
 
 class ProgressLog:
@@ -409,195 +520,570 @@ class ProgressLog:
 # ---------- replay ----------
 
 
+class Frame:
+    """A generator of the flow being driven: its address, the files its own done calls wrote, and its parent.
+
+    A file name resolves in the frame's own history, then in its ancestors' as they stood when they yielded the
+    group, never in a sibling's or a child's. item: the fields of the innermost foreach item, for launch messages.
+    """
+
+    def __init__(self, path: str, parent: Frame | None, item: dict[str, Any]) -> None:
+        self.path = path
+        self.parent = parent
+        self.item = item
+        self.files: dict[str, str] = {}
+        self.counts: dict[str, int] = {}
+        self.last: str | None = None
+
+    def address(self, name: str) -> str:
+        """The address of the next yield of this name: main/review, then main/review#2."""
+        n = self.counts[name] = self.counts.get(name, 0) + 1
+        self.last = f'{self.path}/{name}' + (f'#{n}' if n > 1 else '')
+        return self.last
+
+    def resolve(self, name: str) -> str | None:
+        frame: Frame | None = self
+        while frame is not None:
+            if name in frame.files:
+                return frame.files[name]
+            frame = frame.parent
+        return None
+
+    def names(self) -> set[str]:
+        frame, names = self, set()
+        while frame is not None:
+            names |= frame.files.keys()
+            frame = frame.parent
+        return names
+
+
+@dataclass
+class Proposal:
+    """A record a replay would open, with what its launch message or question needs."""
+
+    record: CallRecord
+    item: dict[str, Any] = field(default_factory=dict)
+    question: str = ''
+
+
+@dataclass
+class Returned:
+    value: Any
+
+
+@dataclass
+class Raised:
+    error: StepFailed
+
+
+@dataclass
+class Pending:
+    """Where a generator stopped: launches and questions to open, and the open records it waits on.
+
+    groups: open parallel, foreach and item records on the way, cancelled with the group that cuts them.
+    """
+
+    proposals: list[Proposal] = field(default_factory=list)
+    running: list[CallRecord] = field(default_factory=list)
+    humans: list[CallRecord] = field(default_factory=list)
+    asks: list[CallRecord] = field(default_factory=list)
+    groups: list[CallRecord] = field(default_factory=list)
+
+    def add(self, other: Pending) -> None:
+        self.proposals += other.proposals
+        self.running += other.running
+        self.humans += other.humans
+        self.asks += other.asks
+        self.groups += other.groups
+
+
+Outcome: TypeAlias = 'Returned | Raised | Pending'
+
+
+@dataclass
+class Update:
+    """A record a replay would close, or a closed one it notes. index: the rows of a foreach's index file to write."""
+
+    record: CallRecord
+    status: CallStatus
+    changes: dict[str, Any] = field(default_factory=dict)
+    index: list[dict[str, Any]] | None = None
+
+
 @dataclass
 class Ending:
-    """The run has reached an end target, or failed; why goes into the end line and the log."""
+    """The run has ended; why goes into the end line and the log, scope resolves the report's files."""
 
     end: End
     why: str
+    scope: Frame | None
 
 
 @dataclass
 class Plan:
-    """What replaying the sections leaves to do."""
+    """What one replay leaves to do: records to open and to close, what is open, or the end of the run.
 
-    launch: list[str] = field(default_factory=list)
-    waiting: list[Section] = field(default_factory=list)
-    humans: list[Section] = field(default_factory=list)
-    side_effect_failures: list[Section] = field(default_factory=list)
+    proposals: the group and item records the replay opened, in the order of their places, then the launches and
+    questions.
+    """
+
+    proposals: list[Proposal] = field(default_factory=list)
+    updates: list[Update] = field(default_factory=list)
+    running: list[CallRecord] = field(default_factory=list)
+    humans: list[CallRecord] = field(default_factory=list)
+    asks: list[CallRecord] = field(default_factory=list)
     ending: Ending | None = None
-    done_count: dict[str, int] = field(default_factory=dict)
-    failed_count: dict[str, int] = field(default_factory=dict)
 
     @property
     def idle(self) -> bool:
-        return not (self.launch or self.waiting or self.humans or self.side_effect_failures)
+        return not (self.proposals or self.running or self.humans or self.asks)
 
 
 class Replay:
-    """Walks the flow from the first step, matching each visit to the next recorded section of that step.
+    """Runs the flow from the top against the recorded calls. It appends nothing to the state, but it numbers
+    what it proposes.
 
-    A finished section is routed through its step's next or on_failure; a step with no section left is to be
-    launched; an open section is waited for. A step with `after` waits until the latest sections of those
-    steps are finished, and is visited again whenever another branch finishes. A step whose `skip` returns a
-    target is not launched: the walk goes on to that target.
+    At each yield the call is looked up by its address: a done record returns its result, a failed or blocked
+    one throws StepFailed, an open one stops that generator, and no record proposes one. A group drives its
+    branches or items as nested generators. A branch or item that does not handle a StepFailed fails its group:
+    the group drops the launches and questions its others propose, waits for the launches already running,
+    closes the rest as cancelled, and throws the StepFailed into the generator that yielded it.
 
-    The walk is depth first on an explicit stack: a run of thousands of sections would overflow Python's recursion
-    limit, and every command replays the whole history.
+    A group or an item record the replay proposes takes its place in state.json at once, after the recorded calls
+    and the records proposed before it, and is indexed as if recorded: what is inside it is driven in the same
+    pass, and its index file has a path. Launches take the places after them when the command commits them.
     """
 
-    def __init__(self, steps: dict[str, AnyStep], start: str, state: RunState) -> None:
-        self._steps = steps
-        self._start = start
-        self._state = state
-        self._unconsumed: dict[str, deque[Section]] = {}
-        for section in state.sections:
-            if not section.superseded:
-                self._unconsumed.setdefault(section.name, deque()).append(section)
-        self._consumed = 0
-        # Sections consumed and joins made: a walk with no change in it repeats itself.
-        self._moves = 0
-        self._latest: dict[str, Section] = {}
-        self._history: dict[str, list[Section]] = {}
-        self._pending_joins: set[str] = set()
-        self._joined_on: dict[str, dict[str, str]] = {}
-        self._take_stale: str | None = None
-        # What to visit, the top next: a step, the steps whose skip led to it, and self._moves when it was pushed.
-        # None visits the joins pending once everything above it is walked.
-        self._stack: list[tuple[str, tuple[str, ...], int] | None] = []
-        self._plan = Plan()
+    def __init__(self, rb: Runbook, state: RunState, run_dir: str) -> None:
+        self.rb = rb
+        self.run_dir = run_dir
+        self.files = RunFiles(run_dir)
+        self.ctx = Context(state.inputs)
+        self.latest: dict[str, CallRecord] = {}
+        self.under: dict[str, list[CallRecord]] = {}
+        for record in state.calls:
+            self._index(record)
+        self.base = len(state.calls)
+        self.opened: list[Proposal] = []
+        self.updates: list[Update] = []
+        self._updated: set[int] = set()
+        # The rows of the index files this replay's updates write, by path: on disk only once the command commits.
+        self.indexes: dict[str, list[dict[str, Any]]] = {}
 
     def run(self) -> Plan:
-        self._walk(self._start)
-        # Nothing else can bring a join a new section of a step it already joined on: it takes the one it has.
-        # The permission is for that one join, not for what the walk reaches after it.
-        stuck: set[str] = set()
-        while self._plan.idle and not self._plan.ending and self._pending_joins - stuck:
-            join = min(self._pending_joins - stuck)
-            consumed = self._consumed
-            self._take_stale = join
-            self._walk(join)
-            self._take_stale = None
-            stuck = stuck | {join} if self._consumed == consumed else set()
-        if self._plan.ending:
-            # A branch cut off by the ending may still have an executor at work: the run ends once it reports.
-            seen = {s.id for s in self._plan.waiting}
-            self._plan.waiting += [
-                s for s in self._state.sections if s.status is Status.RUNNING and not s.superseded and s.id not in seen
-            ]
-        return self._plan
-
-    def _walk(self, name: str) -> None:
-        self._stack = [(name, (), self._moves)]
-        while self._stack and not self._plan.ending:
-            item = self._stack.pop()
-            if item is None:
-                self._stack += [(j, (), self._moves) for j in sorted(self._pending_joins, reverse=True)]
-            else:
-                self._visit(*item)
-
-    def _visit(self, name: str, skipped: tuple[str, ...], moves: int) -> None:
-        """skipped: the steps whose skip led here; moves: self._moves then. A move since breaks the circle."""
-        if name not in self._steps:
-            raise CommandError(f'step {name!r} is not declared')
-        step = self._steps[name]
-        if not self._joined(step):
-            return
-        if moves != self._moves:
-            skipped = ()
-        if isinstance(step, Step) and step.skip is not None:
-            if name in skipped:
-                circle = ' -> '.join(f'`{s}`' for s in (*skipped[skipped.index(name) :], name))
-                raise CommandError(f'`skip` goes round in a circle with nothing to launch: {circle}')
-            target = _resolve(step.skip, f'`skip` of step `{name}`', self._state_now())
-            if target is not None:
-                self._go(target, f'`{name}` skipped', (*skipped, name))
-                return
-        section = self._next_section(name)
-        if section is None:
-            if name not in self._plan.launch:
-                self._plan.launch.append(name)
-            return
-        self._consumed += 1
-        self._moves += 1
-        self._latest[name] = section
-        if section.status is Status.RUNNING:
-            self._plan.waiting.append(section)
-        elif section.status is Status.WAITING_FOR_HUMAN:
-            self._plan.humans.append(section)
-        elif section.status is Status.DONE:
-            self._plan.done_count[name] = self._plan.done_count.get(name, 0) + 1
-            self._history.setdefault(name, []).append(section)
-            self._route(step, section)
+        top = Frame('main', None, {})
+        flow = self.rb.flow_fn
+        assert flow is not None
+        outcome = self._drive(flow, (self.ctx,), top)
+        plan = Plan(proposals=list(self.opened), updates=self.updates)
+        if isinstance(outcome, Pending):
+            plan.proposals += outcome.proposals
+            plan.running = outcome.running
+            plan.humans, plan.asks = outcome.humans, outcome.asks
+        elif isinstance(outcome, Raised):
+            error = outcome.error
+            plan.ending = Ending(FAILED_END, f'`{error.id}` {error.status}: {error.reason}', top)
+        elif isinstance(outcome.value, End):
+            plan.ending = Ending(outcome.value, f'after `{top.last}`' if top.last else 'before any call', top)
         else:
-            self._plan.failed_count[name] = self._plan.failed_count.get(name, 0) + 1
-            if isinstance(step, Step) and step.side_effects:
-                self._plan.side_effect_failures.append(section)
-            else:
-                self._route(step, section)
+            raise FlowError(f'the flow returned {outcome.value!r}; it ends with `return end(<status>, <report>)`')
+        return plan
 
-    def _joined(self, step: AnyStep) -> bool:
-        """Whether every `after` step has a done section this step has not joined on yet.
+    def _index(self, record: CallRecord) -> None:
+        self.latest[record.id] = record
+        for i, char in enumerate(record.id):
+            if char in '/[':
+                self.under.setdefault(record.id[:i], []).append(record)
 
-        A flow that comes back to the join waits for new sections, not the ones of the round before.
-        """
-        used = self._joined_on.get(step.name, {})
-        take_stale, self._take_stale = self._take_stale == step.name, None
-        for dep in step.after:
-            latest = self._latest.get(dep)
-            stale = latest is not None and used.get(dep) == latest.id and not take_stale
-            if latest is None or latest.status.is_open or stale:
-                self._pending_joins.add(step.name)
-                return False
-            if latest.status is not Status.DONE:
-                why = f'step `{latest.id}` {latest.status.value} before the join at `{step.name}`'
-                self._plan.ending = Ending(FAILED_END, why)
-                return False
-        self._pending_joins.discard(step.name)
-        if step.after:
-            self._joined_on[step.name] = {dep: self._latest[dep].id for dep in step.after}
-            self._moves += 1
-        return True
+    def _open(self, record: CallRecord) -> None:
+        """Proposes a group or an item record, numbered and indexed so that what is inside it resolves now."""
+        record.position = self.base + len(self.opened)
+        self.opened.append(Proposal(record))
+        self._index(record)
 
-    def _next_section(self, name: str) -> Section | None:
-        queue = self._unconsumed.get(name)
-        return queue.popleft() if queue else None
+    def _update(
+        self, record: CallRecord, status: CallStatus, index: list[dict[str, Any]] | None = None, **changes: Any
+    ) -> None:
+        if record.status in OPEN and id(record) not in self._updated:
+            self._updated.add(id(record))
+            self.updates.append(Update(record, status, changes, index))
+            if index is not None:
+                self.indexes[self.files.index_path(record)] = index
 
-    def _route(self, step: AnyStep, section: Section) -> None:
-        target = self._target(step, section)
-        if target is None:
-            why = f'step `{section.id}` {section.status.value}'
-            if section.reason:
-                why += f': {section.reason}'
-            self._plan.ending = Ending(FAILED_END, why)
-            return
-        self._go(target, f'after step `{section.id}`')
+    def _cancel_ask(self, record: CallRecord) -> None:
+        """Notes a side-effect step whose question a failing group drops, though the record is closed."""
+        if record.note != NOTE_CANCELLED and id(record) not in self._updated:
+            self._updated.add(id(record))
+            self.updates.append(Update(record, record.status, {'note': NOTE_CANCELLED}))
 
-    def _go(self, target: str | End | Parallel, why: str, skipped: tuple[str, ...] = ()) -> None:
-        if isinstance(target, End):
-            self._plan.ending = Ending(target, why)
-            return
-        targets = target.steps if isinstance(target, Parallel) else (target,)
-        self._stack.append(None)
-        self._stack += [(t, skipped, self._moves) for t in reversed(targets)]
+    def _expect(self, record: CallRecord, kind: Kind, name: str) -> None:
+        if (record.kind, record.step) != (kind, name):
+            raise CommandError(
+                f'`{record.id}` is recorded as {record.kind} `{record.step}`, and the flow yields {kind} `{name}` there: '
+                'flow.py changed under this run. Start a new run.'
+            )
 
-    def _state_now(self) -> State:
-        return State(self._state.inputs, self._plan.done_count, self._latest, self._history, self._plan.failed_count)
+    def _drive(self, function: Callable[..., Any], args: tuple[Any, ...], frame: Frame) -> Outcome:
+        """Runs one generator from its start, sending each yield's result in, until it returns, raises or stops."""
+        try:
+            generator = function(*args)
+        except Exception as e:
+            raise _flow_error(frame.path, e) from e
+        if not inspect.isgenerator(generator):
+            raise FlowError(f'`{frame.path}`: {getattr(function, "__name__", function)} is not a generator function')
+        outcome: Returned | Raised = Returned(None)
+        while True:
+            try:
+                if isinstance(outcome, Raised):
+                    request = generator.throw(outcome.error)
+                else:
+                    request = generator.send(outcome.value)
+            except StopIteration as stop:
+                return Returned(stop.value)
+            except StepFailed as e:
+                e.id = e.id or frame.path
+                return Raised(e)
+            except FlowError:
+                raise
+            except Exception as e:
+                raise _flow_error(frame.path, e) from e
+            result = self._yielded(request, frame)
+            if isinstance(result, Pending):
+                return result
+            outcome = result
 
-    def _target(self, step: AnyStep, section: Section) -> Target:
-        s = self._state_now()
+    def _yielded(self, request: Any, frame: Frame) -> Outcome:
+        if isinstance(request, Call):
+            return self._call(request, frame.address(request.step.name), frame)
+        if isinstance(request, Parallel):
+            return self._parallel(request, frame.address(request.name), frame)
+        if isinstance(request, Foreach):
+            return self._foreach(request, frame.address(request.name), frame)
+        if isinstance(request, (Step, HumanStep)):
+            raise FlowError(f'`{frame.path}` yields step `{request.name}` without calling it: yield {request.name}()')
+        raise FlowError(f'`{frame.path}` yields {request!r}: a flow yields a step call, parallel(...) or foreach(...)')
+
+    # ---------- calls ----------
+
+    def _call(self, call: Call, address: str, frame: Frame) -> Outcome:
+        step = call.step
+        kind: Kind = 'human' if isinstance(step, HumanStep) else 'step'
+        record = self.latest.get(address)
+        if record is None:
+            return Pending(proposals=[self._propose(call, address, frame, 1)])
+        self._expect(record, kind, step.name)
+        if record.status == 'running':
+            return Pending(running=[record])
+        if record.status == 'waiting':
+            return Pending(humans=[record])
+        if record.status == 'cancelled':
+            return Pending()
+        if record.status == 'done':
+            frame.files.update(record.files)
+            return Returned(StepResult(**{**record.reply, 'id': address, 'files': dict(record.files)}))
+        side_effects = isinstance(step, Step) and step.side_effects
+        if record.note == NOTE_RELAUNCHED or (record.status == 'interrupted' and not side_effects):
+            return Pending(proposals=[self._propose(call, address, frame, record.attempt + 1)])
+        if side_effects:
+            return Pending(asks=[record])
+        return Raised(StepFailed(id=address, reply={'status': record.status, **(record.reply or {})}))
+
+    def _propose(self, call: Call, address: str, frame: Frame, attempt: int) -> Proposal:
+        step = call.step
         if isinstance(step, HumanStep):
-            answer = SimpleNamespace(**section.fields()) if step.reply else section.note
-            return _resolve(step.next, f'`next` of step `{step.name}`', answer, s)
-        r = SimpleNamespace(**(section.reply or {}))
-        if section.status is Status.DONE:
-            return _resolve(step.next, f'`next` of step `{step.name}`', r, s)
-        if step.on_failure is not None:
-            return _resolve(step.on_failure, f'`on_failure` of step `{step.name}`', r, s)
-        return None
+            record = CallRecord(id=address, attempt=attempt, kind='human', step=step.name, status='waiting')
+            return Proposal(record, question=self.substitute(step.question, frame))
+        if call.executor is not None and call.executor not in self.rb.executor_specs:
+            raise FlowError(f'`{address}`: executor {call.executor!r} is not declared')
+        inputs: dict[str, Any] = {}
+        passed: dict[str, str | None] = {}
+        for key, value in call.inputs.items():
+            _pass(address, key, value, inputs, passed)
+        files_in: dict[str, str | None] = {}
+        for name in step.reads:
+            if name != WORKING_TREE:
+                files_in[name] = frame.resolve(name) if self.rb.is_output(name) else os.path.join(self.run_dir, name)
+        record = CallRecord(
+            id=address,
+            attempt=attempt,
+            kind='step',
+            step=step.name,
+            status='running',
+            executor=call.executor or step.executor,
+            inputs=inputs,
+            files_in={**files_in, **passed},
+            schema=reply_schema(step.reply),
+        )
+        return Proposal(record, item=frame.item)
+
+    def substitute(self, text: str, frame: Frame | None) -> str:
+        """<run>/<name> becomes the file of that name in the frame's scope; any other <run> the run directory."""
+        if frame is not None:
+            for name in sorted(frame.names(), key=len, reverse=True):
+                text = text.replace(f'<run>/{name}', frame.resolve(name) or '')
+        return text.replace('<run>', self.run_dir)
+
+    # ---------- groups ----------
+
+    def _parallel(self, group: Parallel, address: str, frame: Frame) -> Outcome:
+        record = self.latest.get(address)
+        if record is None:
+            record = CallRecord(id=address, kind='parallel', step=group.name, status='running')
+            self._open(record)
+        self._expect(record, 'parallel', group.name)
+        outcomes: dict[str, Outcome] = {}
+        for key, branch in group.branches.items():
+            branch_frame = Frame(f'{address}/{key}', frame, frame.item)
+            if isinstance(branch, Call):
+                outcomes[key] = self._call(branch, branch_frame.path, branch_frame)
+            else:
+                outcomes[key] = self._drive(branch, (self.ctx,), branch_frame)
+        failure = next((o.error for o in outcomes.values() if isinstance(o, Raised)), None)
+        pending = Pending(groups=[record])
+        for outcome in outcomes.values():
+            if isinstance(outcome, Pending):
+                pending.add(outcome)
+        if failure is not None:
+            branches = {key: _branch_status(outcome) for key, outcome in outcomes.items()}
+            return self._fail(record, failure, pending, branches=branches)
+        if any(isinstance(outcome, Pending) for outcome in outcomes.values()):
+            return pending
+        self._update(record, 'done', branches={key: 'done' for key in outcomes})
+        results = {key: outcome.value for key, outcome in outcomes.items() if isinstance(outcome, Returned)}
+        return Returned(ParallelResult(**results, id=address))
+
+    def _foreach(self, group: Foreach, address: str, frame: Frame) -> Outcome:
+        record = self.latest.get(address)
+        if record is None:
+            if os.path.isabs(group.over) or not self.rb.is_output(group.over):
+                path: str | None = os.path.join(self.run_dir, group.over)
+            else:
+                path = frame.resolve(group.over)
+            items, problem = _read_items(path, group, self.indexes)
+            record = CallRecord(
+                id=address, kind='foreach', step=group.name, status='running', over=path, items=items, problem=problem
+            )
+            self._open(record)
+        self._expect(record, 'foreach', group.name)
+        index_name = f'{group.name}.index'
+        if record.problem is not None:
+            self._update(record, 'failed', index=[])
+            frame.files[index_name] = self.files.index_path(record)
+            return Raised(StepFailed(id=address, reply={'status': 'failed', 'reason': record.problem}))
+        items = record.items or []
+        batch: list[tuple[dict[str, Any], CallRecord]] = []
+        for item in items:
+            item_record = self.latest.get(f'{address}[{item["key"]}]')
+            if item_record is None:
+                break
+            self._expect(item_record, 'item', group.name)
+            batch.append((item, item_record))
+        # The recorded items, then batches of new ones while slots are free: an item that ends in this pass frees
+        # its slot for the next batch, and a failure with 'fail' starts no more.
+        started: list[tuple[dict[str, Any], CallRecord, Outcome]] = []
+        failure: StepFailed | None = None
+        active = 0
+        while True:
+            for item, item_record in batch:
+                outcome = self._item(group, item, item_record, frame)
+                started.append((item, item_record, outcome))
+                if isinstance(outcome, Pending):
+                    active += 1
+                elif isinstance(outcome, Raised) and group.on_item_failure == 'fail' and failure is None:
+                    failure = outcome.error
+            new = [] if failure else items[len(started) : len(started) + max(0, group.max_concurrent - active)]
+            if not new:
+                break
+            batch = []
+            for item in new:
+                item_record = CallRecord(
+                    id=f'{address}[{item["key"]}]', kind='item', step=group.name, status='running', fields=item
+                )
+                self._open(item_record)
+                batch.append((item, item_record))
+        pending = Pending(groups=[record])
+        for _, item_record, outcome in started:
+            if isinstance(outcome, Pending):
+                pending.add(outcome)
+                pending.groups.append(item_record)
+        rows = [self._row(item, item_record, outcome) for item, item_record, outcome in started]
+        rows += [_index_row(item['key'], 'not_started') for item in items[len(started) :]]
+        for row, (_, item_record, _) in zip(rows, started):
+            if row['status'] != 'running':
+                self._update(item_record, row['status'], reply=row['reply'], reason=row['reason'], files=row['files'])
+        if failure is not None:
+            outcome = self._fail(record, failure, pending, index=rows)
+            if isinstance(outcome, Raised):
+                frame.files[index_name] = self.files.index_path(record)
+            return outcome
+        if len(started) < len(items) or active:
+            return pending
+        self._update(record, 'done', index=rows)
+        index_path = self.files.index_path(record)
+        frame.files[index_name] = index_path
+        return Returned(
+            ForeachResult(id=address, files={index_name: index_path}, items=[ItemResult(**row) for row in rows])
+        )
+
+    def _item(self, group: Foreach, item: dict[str, Any], record: CallRecord, frame: Frame) -> Outcome:
+        item_frame = Frame(record.id, frame, item)
+        if isinstance(group.body, Call):
+            outcome = self._yielded(group.body, item_frame)
+            if isinstance(outcome, Returned):
+                outcome = Returned(_result_fields(outcome.value))
+        else:
+            outcome = self._drive(group.body, (self.ctx, SimpleNamespace(**item)), item_frame)
+        if isinstance(outcome, Returned) and not _is_json(outcome.value):
+            raise FlowError(
+                f'`{record.id}`: the body returned {outcome.value!r}, and an item returns a JSON value, its reply'
+            )
+        return outcome
+
+    def _row(self, item: dict[str, Any], record: CallRecord, outcome: Outcome) -> dict[str, Any]:
+        """The item's entry in the index: key, status, reply, reason, and the files of its latest done launches."""
+        files: dict[str, str] = {}
+        for inner in self.under.get(record.id, []):
+            if inner.kind in ('step', 'human') and inner.status == 'done':
+                files.update(inner.files)
+        if isinstance(outcome, Returned):
+            return _index_row(item['key'], 'done', reply=outcome.value, files=files)
+        if isinstance(outcome, Raised):
+            return _index_row(item['key'], 'failed', reason=outcome.error.reason, files=files)
+        return _index_row(item['key'], 'running', files=files)
+
+    def _fail(self, record: CallRecord, failure: StepFailed, pending: Pending, **close: Any) -> Outcome:
+        """A group whose branch or item failed: it waits for what is running, then closes failed and throws.
+
+        close: the record's `branches`, or the `index` rows of a foreach, where a running item is cut.
+        """
+        for human in pending.humans:
+            self._update(human, 'cancelled')
+        for ask in pending.asks:
+            self._cancel_ask(ask)
+        if pending.running:
+            return Pending(running=pending.running, groups=pending.groups)
+        if 'index' in close:
+            close['index'] = [
+                {**row, 'status': 'cancelled'} if row['status'] == 'running' else row for row in close['index']
+            ]
+            for row in close['index']:
+                item = self.latest.get(f'{record.id}[{row["key"]}]')
+                if item is not None and row['status'] == 'cancelled':
+                    self._update(item, 'cancelled', files=row['files'])
+        for group in pending.groups:
+            if group is not record:
+                self._update(group, 'cancelled')
+        self._update(record, 'failed', **close)
+        return Raised(failure)
 
 
-# ---------- output ----------
+def _branch_status(outcome: Outcome) -> str:
+    """How a branch of a failed parallel ended: done, failed, or cancelled while it had more to do."""
+    if isinstance(outcome, Returned):
+        return 'done'
+    return 'failed' if isinstance(outcome, Raised) else 'cancelled'
+
+
+def _index_row(
+    key: str, status: str, reply: Any = None, reason: str | None = None, files: dict[str, str] | None = None
+) -> dict[str, Any]:
+    return dict(key=key, status=status, reply=reply, reason=reason, files=files or {})
+
+
+def _flow_error(where: str, e: Exception) -> FlowError:
+    frames = traceback.extract_tb(e.__traceback__)
+    line = f' (line {frames[-1].lineno} of {os.path.basename(frames[-1].filename)})' if frames else ''
+    return FlowError(f'the flow raised {type(e).__name__}: {e} at `{where}`{line}')
+
+
+def _is_json(value: Any) -> bool:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _is_json(v) for k, v in value.items())
+    return False
+
+
+RESULTS = (StepResult, ParallelResult, ForeachResult, ItemResult)
+
+
+def _holds_result(value: Any) -> bool:
+    if isinstance(value, RESULTS):
+        return True
+    if isinstance(value, dict):
+        return any(_holds_result(v) for v in value.values())
+    return isinstance(value, (list, tuple)) and any(_holds_result(v) for v in value)
+
+
+def _pass(address: str, key: str, value: Any, inputs: dict[str, Any], files: dict[str, str | None]) -> None:
+    """A keyword argument of a call as lines of its message: a JSON value as `key: value`; a result, or a dict or
+    list holding results, as `key.<path>: <field>` and `read key.<path>/<name>: <file>`."""
+    if isinstance(value, StepResult):
+        inputs.update({f'{key}.{name}': v for name, v in _result_fields(value).items()})
+        files.update({f'{key}/{name}': path for name, path in value.files.items()})
+    elif isinstance(value, ForeachResult):
+        files.update({f'{key}/{name}': path for name, path in value.files.items()})
+    elif isinstance(value, ItemResult):
+        inputs.update({f'{key}.{name}': v for name, v in vars(value).items() if name != 'files'})
+        files.update({f'{key}/{name}': path for name, path in value.files.items()})
+    elif isinstance(value, ParallelResult):
+        for branch, v in vars(value).items():
+            if branch != 'id':
+                _pass(address, f'{key}.{branch}', v, inputs, files)
+    elif _holds_result(value):
+        for part, v in value.items() if isinstance(value, dict) else enumerate(value):
+            _pass(address, f'{key}.{part}', v, inputs, files)
+    elif _is_json(value):
+        inputs[key] = value
+    else:
+        raise FlowError(f'`{address}`: input {key!r} is {value!r}; a call takes JSON values and results')
+
+
+ITEM_KEY = NAME
+
+
+def _read_items(
+    path: str | None, group: Foreach, proposed: dict[str, list[dict[str, Any]]]
+) -> tuple[list[dict[str, Any]], str | None]:
+    """The items of a foreach's `over` file, or why there are none to run.
+
+    proposed: index rows by path that the replay has not written yet; such a file is read from here.
+    """
+    if path is None:
+        return [], f'{group.over} is absent, no earlier step wrote it'
+    if path in proposed:
+        # Through JSON, so that the items are what the file will hold.
+        items: Any = json.loads(json.dumps(proposed[path]))
+    else:
+        try:
+            with open(path, encoding='utf-8') as f:
+                items = json.load(f)
+        except OSError as e:
+            return [], f'{path}: {e.strerror}'
+        except ValueError as e:
+            return [], f'{path} is not JSON: {e}'
+    if not isinstance(items, list):
+        return [], f'{path} is not a JSON array of objects'
+    if len(items) > group.max_items:
+        return [], (
+            f'{path} has {len(items)} items, more than max_items={group.max_items}. '
+            f'Raise max_items in flow.py if the run can take that many, '
+            f'or move this stage to a workflow native to the harness'
+        )
+    seen: set[str] = set()
+    for i, item in enumerate(items):
+        key = item.get('key') if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            return [], f'item {i} of {path} is not a JSON object'
+        if not isinstance(key, str) or not ITEM_KEY.fullmatch(key):
+            return [], f'item {i} of {path} has key {json.dumps(key)}, not a string of letters, digits, _ . -'
+        if key in seen:
+            return [], f'item {i} of {path} repeats key {key!r}'
+        seen.add(key)
+    return items, None
+
 
 # ---------- what the orchestrator and the executors read ----------
 
@@ -623,6 +1109,9 @@ TEXT = {
     'correct_then': 'when it answers: {command}',
     'correct_cannot': 'if your tool cannot send a message to a subagent that has finished: {command}',
     'still_running': 'still running: {labels}',
+    'withdraw': 'withdraw the question `{label}`: its group failed; tell the human no answer is needed',
+    'withdraw_ask': 'withdraw the question whether to relaunch step `{label}`: its group failed, and it is not '
+    'relaunched; tell the human no answer is needed',
     'idle': 'nothing is pending and the run has not ended. Report that to the human with the run directory, and stop.',
     'wait_for_end': 'wait: {labels}. The run ends {status} once they are recorded.',
     'ended': 'end: {status} ({why}). The run is over. Report to the human: status {status}, run directory {run}{report}.',
@@ -665,36 +1154,41 @@ class Renderer:
         self.rb = rb
         self.run_dir = run_dir
         self.state = state
-        self.files = RunFiles(rb.steps, run_dir, state)
+        self.files = RunFiles(run_dir)
 
     def _command(self, *args: str, placeholder: str = '') -> str:
         command = ' '.join((self.rb.cmd, shlex.quote(self.run_dir), *(shlex.quote(arg) for arg in args)))
         return f'{command} {placeholder}' if placeholder else command
 
     @staticmethod
-    def _labels(sections: list[Section]) -> str:
-        return ', '.join(f'`{s.id}`' for s in sections)
+    def _labels(records: list[CallRecord]) -> str:
+        return ', '.join(f'`{r.label}`' for r in records)
 
-    def wait_for_end(self, ending: Ending, waiting: list[Section]) -> list[str]:
-        labels = self._labels(waiting)
-        return [TEXT['wait_for_end'].format(labels=labels, status=ending.end.status)]
+    def wait_for_end(self, ending: Ending, running: list[CallRecord]) -> list[str]:
+        return [TEXT['wait_for_end'].format(labels=self._labels(running), status=ending.end.status)]
 
-    def correction(self, section: Section, problem: str) -> list[str]:
+    def correction(self, record: CallRecord, problem: str) -> list[str]:
         """What the orchestrator sends the executor whose reply did not pass the check."""
-        body = TEXT['message_correct'].format(problem=problem, schema=self.files.schema_path(section.name))
+        body = TEXT['message_correct'].format(problem=problem, schema=self.files.schema_path(record))
         return [
-            TEXT['correct'].format(label=section.id, problem=problem),
+            TEXT['correct'].format(label=record.label, problem=problem),
             TEXT['message_open'],
             body,
             TEXT['message_close'],
-            TEXT['correct_then'].format(command=self._command('reply', section.id, placeholder=TEXT['reply_arg'])),
+            TEXT['correct_then'].format(command=self._command('reply', record.label, placeholder=TEXT['reply_arg'])),
             TEXT['correct_cannot'].format(
-                command=self._command('reply', section.id, placeholder=TEXT['uncorrectable_reply'])
+                command=self._command('reply', record.label, placeholder=TEXT['uncorrectable_reply'])
             ),
         ]
 
-    def ended(self, ending: Ending) -> list[str]:
-        report = self.files.substitute(ending.end.report)
+    def withdrawn(self, records: list[CallRecord]) -> list[str]:
+        """Questions the orchestrator asked that a failing group closed: a human step's, or a side-effect step's."""
+        return [
+            TEXT['withdraw' if record.kind == 'human' else 'withdraw_ask'].format(label=record.label)
+            for record in records
+        ]
+
+    def ended(self, ending: Ending, report: str) -> list[str]:
         return [
             TEXT['ended'].format(
                 status=ending.end.status,
@@ -704,22 +1198,23 @@ class Renderer:
             )
         ]
 
-    def pending(self, plan: Plan, opened: list[Section]) -> list[str]:
+    def pending(self, plan: Plan, opened: list[Proposal]) -> list[str]:
         """The lines for what is open: questions, launches, waits. Blocks are separated by an empty line."""
+        new = {id(p.record) for p in opened}
         blocks: list[list[str]] = [
-            [self._side_effect_failure(section) for section in plan.side_effect_failures]
-            + [self._waiting_for_human(section) for section in plan.humans]
+            [self._side_effect_failure(record) for record in plan.asks]
+            + [self._waiting_for_human(record) for record in plan.humans if id(record) not in new]
         ]
-        launches = [s for s in opened if isinstance(self.rb.steps[s.name], Step)]
+        launches = [p for p in opened if p.record.kind == 'step']
         if len(launches) > 1:
             blocks.append([TEXT['launch_together'].format(count=len(launches))])
-        for section in opened:
-            step = self.rb.steps[section.name]
-            blocks.append(self._ask(step, section) if isinstance(step, HumanStep) else self._launch(step, section))
+        for proposal in opened:
+            blocks.append(self._ask(proposal) if proposal.record.kind == 'human' else self._launch(proposal))
         tail: list[str] = []
-        if plan.waiting:
-            tail.append(TEXT['still_running'].format(labels=self._labels(plan.waiting)))
-        if plan.idle:
+        running = [record for record in plan.running if id(record) not in new]
+        if running:
+            tail.append(TEXT['still_running'].format(labels=self._labels(running)))
+        if plan.idle and not opened:
             tail.append(TEXT['idle'])
         blocks.append(tail)
         lines: list[str] = []
@@ -727,34 +1222,39 @@ class Renderer:
             lines += ([''] if lines else []) + block
         return lines
 
-    def _side_effect_failure(self, section: Section) -> str:
-        reason = TEXT['reason'].format(reason=section.reason) if section.reason else ''
+    def _side_effect_failure(self, record: CallRecord) -> str:
+        reason = (record.reply or {}).get('reason')
         return TEXT['side_effect_failure'].format(
-            label=section.id,
-            status=section.status.value,
-            reason=reason,
-            relaunch=self._command('relaunch', section.id),
+            label=record.label,
+            status=record.status,
+            reason=TEXT['reason'].format(reason=reason) if reason else '',
+            relaunch=self._command('relaunch', record.label),
             log=self._command('log', placeholder=TEXT['log_arg']),
         )
 
-    def _waiting_for_human(self, section: Section) -> str:
-        step = self.rb.steps[section.name]
-        assert isinstance(step, HumanStep)
+    def _human(self, record: CallRecord) -> HumanStep:
+        step = self.rb.steps.get(record.step)
+        if not isinstance(step, HumanStep):
+            raise CommandError(f'`{record.label}` asks human step `{record.step}`, which flow.py does not declare')
+        return step
+
+    def _waiting_for_human(self, record: CallRecord) -> str:
+        step = self._human(record)
         choices = TEXT['choices'].format(choices=' | '.join(step.choices)) if step.choices else TEXT['free_text']
         if step.reply:
             choices += TEXT['fields'].format(fields=self._fields(step))
         return TEXT['waiting_for_human'].format(
-            label=section.id, choices=choices, command=self._answer_command(step, section)
+            label=record.label, choices=choices, command=self._answer_command(step, record)
         )
 
-    def _answer_command(self, step: HumanStep, section: Section) -> str:
+    def _answer_command(self, step: HumanStep, record: CallRecord) -> str:
         arg = TEXT['answer_arg'] if step.choices else TEXT['answer_free_arg']
         if step.reply:
             keys = ([TEXT['answer_json_choice']] if step.choices else []) + [
                 TEXT['answer_json_field'].format(name=name) for name in step.reply
             ]
             arg = TEXT['answer_json_arg'].format(keys=', '.join(keys))
-        return self._command('answer', section.id, placeholder=arg)
+        return self._command('answer', record.label, placeholder=arg)
 
     @staticmethod
     def _fields(step: HumanStep) -> str:
@@ -767,34 +1267,38 @@ class Renderer:
             parts.append(f'{name}{kind}{about}')
         return '; '.join(parts)
 
-    def _ask(self, step: HumanStep, section: Section) -> list[str]:
-        lines = [TEXT['ask'].format(label=section.id, question=self.files.substitute(step.question))]
+    def _ask(self, proposal: Proposal) -> list[str]:
+        record = proposal.record
+        step = self._human(record)
+        lines = [TEXT['ask'].format(label=record.label, question=proposal.question)]
         if step.choices:
             lines.append(TEXT['ask_choices'].format(choices=' | '.join(step.choices)))
         else:
             lines.append(TEXT['ask_free'])
         if step.reply:
             lines.append(TEXT['ask_fields'].format(fields=self._fields(step)))
-        lines.append(TEXT['ask_then'].format(command=self._answer_command(step, section)))
+        lines.append(TEXT['ask_then'].format(command=self._answer_command(step, record)))
         return lines
 
-    def _launch(self, step: Step, section: Section) -> list[str]:
-        inputs = self.state.inputs
-        executor = section.executor
+    def _launch(self, proposal: Proposal) -> list[str]:
+        record = proposal.record
+        step = self.rb.steps[record.step]
+        assert isinstance(step, Step)
         headline = TEXT['launch'].format(
-            label=section.id,
-            executor=executor,
-            spec=self.rb.executor_specs.get(executor or '', TEXT['missing_executor']),
+            label=record.label,
+            executor=record.executor,
+            spec=self.rb.executor_specs.get(record.executor or '', TEXT['missing_executor']),
         )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
-        lines = [headline, TEXT['message_open'], *self._message(step, section, inputs), TEXT['message_close']]
+        lines = [headline, TEXT['message_open'], *self._message(step, proposal), TEXT['message_close']]
         lines.append(
-            TEXT['when_finishes'].format(command=self._command('reply', section.id, placeholder=TEXT['reply_arg']))
+            TEXT['when_finishes'].format(command=self._command('reply', record.label, placeholder=TEXT['reply_arg']))
         )
         return lines
 
-    def _message(self, step: Step, section: Section, inputs: dict[str, Any]) -> list[str]:
+    def _message(self, step: Step, proposal: Proposal) -> list[str]:
+        record, inputs = proposal.record, self.state.inputs
         lines = [
             TEXT['message_read'].format(
                 common=os.path.join(self.rb.here, 'prompts', 'common.md'),
@@ -808,22 +1312,24 @@ class Renderer:
                 key, value = item
             else:
                 key, value = item, inputs.get(item, TEXT['missing_input'])
-            lines.append(TEXT['message_input'].format(key=key, value=value))
-        for name in step.writes:
-            lines.append(TEXT['message_write'].format(name=name, path=self.files.path(section, name)))
-        for name in step.reads:
-            if name == WORKING_TREE:
-                continue
-            path = (
-                self.files.latest(name, before=section)
-                if self.files.is_output(name)
-                else os.path.join(self.run_dir, name)
-            )
+            lines.append(TEXT['message_input'].format(key=key, value=_line_value(value)))
+        for key, value in (*record.inputs.items(), *proposal.item.items()):
+            lines.append(TEXT['message_input'].format(key=key, value=_line_value(value)))
+        for name, path in record.writes.items():
+            lines.append(TEXT['message_write'].format(name=name, path=path))
+        for name, path in record.files_in.items():
             lines.append(TEXT['message_file'].format(name=name, path=path or TEXT['absent']))
-        lines.append(TEXT['message_schema'].format(path=self.files.schema_path(step.name)))
-        if any(s.name == step.name and s.superseded for s in self.state.sections):
+        lines.append(TEXT['message_schema'].format(path=self.files.schema_path(record)))
+        if record.attempt > 1:
             lines.append(TEXT['message_partial'])
         return lines
+
+
+def _line_value(value: Any) -> str:
+    """A value as one line of a launch message: a string with no line break as it is, anything else as JSON."""
+    if isinstance(value, str) and '\n' not in value and '\r' not in value:
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 # ---------- inputs ----------
@@ -882,12 +1388,15 @@ class Runbook:
 
     def __init__(self) -> None:
         self.steps: dict[str, AnyStep] = {}
-        self.start_step: str | None = None
+        self.flow_fn: Callable[[Context], Generator[Any, Any, Any]] | None = None
         self.input_spec: dict[str, Any] = {}
         self.executor_specs: dict[str, str] = {}
         self.here = os.path.dirname(os.path.abspath(sys.argv[0]))
         # Set by `reply` when it asks the executor to correct its reply; printed before what the run does next.
-        self._correcting: tuple[Section, str] | None = None
+        self._correcting: tuple[CallRecord, str] | None = None
+        # The launch `reply` or `interrupted` closed: if its group drops the question it raises, none was asked yet.
+        # Holds for this command only: if its flow raises, the next command withdraws the question though none was asked.
+        self._closed: CallRecord | None = None
         flow = os.path.join(self.here, os.path.basename(sys.argv[0]))
         self.cmd = f'{shlex.quote(sys.executable)} {shlex.quote(flow)}'
 
@@ -899,100 +1408,109 @@ class Runbook:
         """What the orchestrator launches for this executor name: model, tool, effort, cwd. Printed with every launch."""
         self.executor_specs[name] = description
 
-    def start(self, name: str) -> None:
-        """The step a run begins with."""
-        self.start_step = name
-
     def step(
         self,
         name: str,
         *,
-        executor: str | Callable[[State], str],
+        executor: str,
         prompt: str,
-        next: Route,
         inputs: Iterable[str | tuple[str, Any]] = (),
         reply: dict[str, Any] | None = None,
         reads: Iterable[str] = (),
         writes: Iterable[str] = (),
-        after: Iterable[str] = (),
         side_effects: str | None = None,
-        on_failure: Route = None,
-        skip: Callable[[State], Target] | None = None,
-    ) -> None:
-        """A step an executor runs.
+    ) -> Step:
+        """A step an executor runs. The flow launches it with `r = yield step(...)`.
 
-        executor: a name declared with executor(), or a function (s) -> name, to pick by inputs.
-        next: a step name, parallel(...), end(...), or a function (r, s) -> one of those, where r is the
-        reply with its fields as attributes and s is the State. Called for done replies only.
-        on_failure: the same, called for failed and blocked replies. Without it they end the run as failed.
+        executor: a name declared with executor(); a call can pick another one, `step(executor='light')`.
         inputs: names taken from the run's inputs, or (key, value) pairs passed as they are.
         reply: {field: type or JSON Schema of the field} the executor's JSON carries beyond status. The engine
         writes the reply's schema for the executor from it, and checks each field's presence and type.
-        writes: names of the files the step writes. Each launch writes <run>/<NN>-<name>, NN being its section's
+        writes: names of the files the step writes. Each launch writes <run>/<NN>-<name>, NN being its record's
         place in the run, and the launch message gives the path.
-        reads: names of the files the step reads: another step's output, given as the latest such file or as
-        absent; an input file under <run>, given as it is; or 'working tree', which is not passed.
-        after: steps whose latest sections must be done before this one launches.
+        reads: names of the files the step reads: another step's output, given as the latest such file in the
+        calling generator's scope or as absent; an input file under <run>, given as it is; or 'working tree',
+        which is not passed.
         side_effects: what the step does outside the tree; such a step is never relaunched without the human.
-        skip: a function (s) -> target or None, called once `after` is satisfied. A target is followed instead
-        of launching the step.
         """
-        self._check_declaration(name, inputs=inputs, reads=reads, writes=writes, after=after)
-        self.steps[name] = Step(
+        self._check_declaration(name, inputs=inputs, reads=reads, writes=writes)
+        if not isinstance(executor, str):
+            raise TypeError(f'step {name!r}: executor is {executor!r}, not the name of a declared executor')
+        reads, writes = list(reads), list(writes)
+        _check_strings(name, 'prompt', [prompt])
+        _check_strings(name, 'reads', reads)
+        _check_strings(name, 'writes', writes)
+        if side_effects is not None:
+            _check_strings(name, 'side_effects', [side_effects], empty_ok=True)
+        inputs = list(inputs)
+        for item in inputs:
+            if not isinstance(item, str) and not (
+                isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
+            ):
+                raise TypeError(f'step {name!r}: inputs item {item!r} is neither a name nor a (key, value) pair')
+        _check_reply_names(name, reply)
+        step = Step(
             name=name,
             executor=executor,
             prompt=prompt,
-            next=next,
-            inputs=list(inputs),
+            inputs=inputs,
             reply=reply or {},
             reads=list(reads),
             writes=list(writes),
-            after=list(after),
             side_effects=side_effects,
-            on_failure=on_failure,
-            skip=skip,
         )
+        _check_reply_declaration(step)
+        self.steps[name] = step
+        return step
 
     def human(
         self,
         name: str,
         *,
         question: str,
-        next: Route,
         choices: Iterable[str] = (),
         reply: dict[str, Any] | None = None,
         writes: str | None = None,
-        after: Iterable[str] = (),
-    ) -> None:
-        """A question to the human.
+    ) -> HumanStep:
+        """A question to the human. The flow asks it with `a = yield human_step()`.
 
-        choices: the strings next() compares against; the orchestrator maps the answer to one of them. Without
-        choices the step takes free text and next() gets it whole.
+        choices: the strings a.choice is one of; the orchestrator maps the answer to one of them. Without
+        choices the step takes free text and a.choice is the text whole.
         reply: {field: type or JSON Schema of the field} the orchestrator takes from the human's words next to
-        the choice. A field the human did not give is its schema's `default`, or None.
-        next: a function (choice, s) -> step, parallel(...) or end(...). With `reply`, a function (a, s), where
-        a has the choice as a.choice and the fields as attributes.
+        the choice, as a.<field>. A field the human did not give is its schema's `default`, or None.
         writes: a file name the engine writes the human's verbatim words to, numbered like a step's output.
+        question: what the orchestrator asks; <run>/<name> in it becomes that file in the calling generator's scope.
         """
-        self._check_declaration(name, choices=choices, after=after)
-        self.steps[name] = HumanStep(
-            name=name,
-            question=question,
-            choices=list(choices),
-            next=next,
-            reply=reply or {},
-            writes=writes,
-            after=list(after),
-        )
+        self._check_declaration(name, choices=choices)
+        choices = list(choices)
+        _check_strings(name, 'question', [question], empty_ok=True)
+        _check_strings(name, 'choices', choices)
+        if writes is not None:
+            _check_strings(name, 'writes', [writes])
+        _check_reply_names(name, reply)
+        step = HumanStep(name=name, question=question, choices=choices, reply=reply or {}, writes=writes)
+        _check_reply_declaration(step)
+        self.steps[name] = step
+        return step
+
+    def flow(self, function: FlowFunction) -> FlowFunction:
+        """Marks the generator function main(ctx) that runs the flow; it returns end(...)."""
+        if self.flow_fn is not None:
+            raise ValueError(f'@rb.flow: {self.flow_fn.__name__} is already the flow; a runbook has one')
+        if not inspect.isgeneratorfunction(function):
+            raise TypeError(f'@rb.flow: {getattr(function, "__name__", function)} is not a generator function')
+        self.flow_fn = function
+        return function
+
+    def is_output(self, name: str) -> bool:
+        """Whether a step or a foreach writes files of this name, as against an input file under <run>."""
+        return name.endswith('.index') or any(name in _writes(step) for step in self.steps.values())
 
     def _check_declaration(self, name: str, **collections: Iterable[Any]) -> None:
+        if not isinstance(name, str) or not NAME.fullmatch(name):
+            raise ValueError(f'step {name!r}: the name must be letters, digits, _ . -')
         if name in self.steps:
             raise ValueError(f'step {name!r} is already declared')
-        for other in self.steps:
-            if re.fullmatch(re.escape(other) + r'-\d+', name) or re.fullmatch(re.escape(name) + r'-\d+', other):
-                raise ValueError(
-                    f"step {name!r} conflicts with step {other!r}: names cannot use another step's counter"
-                )
         for parameter, value in collections.items():
             if isinstance(value, str):
                 raise TypeError(f'step {name!r}: {parameter} takes a collection, not a lone string')
@@ -1006,16 +1524,10 @@ class Runbook:
         problems: list[str] = []
         if 'repo' not in self.input_spec:
             problems.append("inputs: 'repo' is not declared")
-        if self.start_step is None:
-            problems.append('no start step: call rb.start(<name>)')
-        elif self.start_step not in self.steps:
-            problems.append(f'start step {self.start_step!r} is not declared')
-        for name, step in self.steps.items():
-            problems += [f'step {name}: after({d!r}) is not declared' for d in step.after if d not in self.steps]
-            if isinstance(step, HumanStep):
-                problems += self._check_human(step)
-            else:
-                problems += self._check_step(step)
+        if self.flow_fn is None:
+            problems.append('no flow: decorate the generator function of the flow with @rb.flow')
+        for step in self.steps.values():
+            problems += self._check_human(step) if isinstance(step, HumanStep) else self._check_step(step)
         if not os.path.exists(os.path.join(self.here, 'prompts', 'common.md')):
             problems.append('prompts/common.md does not exist')
         return problems
@@ -1024,37 +1536,26 @@ class Runbook:
         problems = []
         if not step.question:
             problems.append(f'step {step.name}: human step without a question')
-        return problems + _reply_declaration_problems(step, reserved=('choice',))
+        return problems
 
     def _check_step(self, step: Step) -> list[str]:
         n = step.name
         problems = []
         if not os.path.exists(os.path.join(self.here, step.prompt)):
             problems.append(f'step {n}: {step.prompt} does not exist')
-        if isinstance(step.executor, str) and step.executor not in self.executor_specs:
+        if step.executor not in self.executor_specs:
             problems.append(f'step {n}: executor {step.executor!r} is not declared')
         for item in step.inputs:
             if isinstance(item, str) and item not in self.input_spec:
                 problems.append(f'step {n}: input {item!r} is not a declared run input')
-            elif not isinstance(item, (str, tuple)):
-                problems.append(f'step {n}: input {item!r} is neither a name nor a (key, value) pair')
-        if step.skip is not None and not callable(step.skip):
-            problems.append(f'step {n}: skip is {step.skip!r}, not a function')
-        nxt = step.next
-        if not callable(nxt) and not isinstance(nxt, (str, End, Parallel)):
-            problems.append(f'step {n}: next is {nxt!r}')
-        if isinstance(nxt, str) and nxt not in self.steps:
-            problems.append(f'step {n}: next step {nxt!r} is not declared')
-        if isinstance(nxt, Parallel):
-            problems += [f'step {n}: parallel target {t!r} is not declared' for t in nxt.steps if t not in self.steps]
-        return problems + _reply_declaration_problems(step, reserved=('status', 'reason'))
+        return problems
 
     # ---------- commands ----------
 
     def _start(self, run_dir: str, args: list[str]) -> RunState:
-        if os.path.exists(run_dir):
+        if os.path.exists(RunState.path(run_dir)):
             raise CommandError(
-                f'{run_dir} exists. Use another run directory, or run me without a command to resume a run there.'
+                f'{run_dir} holds a run. Use another run directory, or run me without a command to resume the run there.'
             )
         try:
             given = json.loads(args[0]) if args else {}
@@ -1063,43 +1564,52 @@ class Runbook:
         if not isinstance(given, dict):
             raise CommandError('start: inputs must be one JSON object')
         inputs = _resolve_inputs(self.input_spec, given)
-        os.makedirs(run_dir)
-        state = RunState(runbook=os.path.basename(self.here), status=Status.RUNNING.value, inputs=inputs, sections=[])
+        os.makedirs(run_dir, exist_ok=True)
+        state = RunState(runbook=os.path.basename(self.here), status='running', inputs=inputs, calls=[])
         ProgressLog(run_dir).create(state.runbook, inputs)
         return state
 
     def _reply(self, run_dir: str, args: list[str]) -> RunState:
-        sid, raw = args
+        label, raw = args
         state = RunState.load(run_dir)
-        section = state.section(sid)
-        if section.status is not Status.RUNNING:
-            raise CommandError(f'section {sid} is {section.status.value}, not running')
+        record = state.find(label)
+        if record.kind != 'step' or record.status != 'running':
+            raise CommandError(f'call {label} is {record.status}, not running')
+        reply: dict[str, Any]
         reply, problem = _parse_reply(raw)
-        step = self.steps.get(section.name)
-        if problem is None and reply['status'] == Status.DONE.value and isinstance(step, Step):
-            problem = _reply_problem(reply, step.reply)
+        if problem is None and reply['status'] == 'done':
+            problem = _reply_problem(reply, _schema_fields(record.schema))
         log = ProgressLog(run_dir)
         if problem:
-            section.invalid_replies.append({'reply': raw, 'problem': problem})
-            log.append(f'{sid}: invalid reply ({problem}): {" ".join(raw.split())}')
-            if len(section.invalid_replies) <= CORRECTIONS:
-                self._correcting = (section, problem)
-                log.append(f'{sid}: its executor is asked to correct the reply')
+            record.invalid_replies.append({'reply': raw, 'problem': problem})
+            log.append(f'{record.label}: invalid reply ({problem}): {" ".join(raw.split())}')
+            if len(record.invalid_replies) <= CORRECTIONS:
+                self._correcting = (record, problem)
+                log.append(f'{record.label}: its executor is asked to correct the reply')
                 return state
-            reply = {'status': Status.FAILED.value, 'reason': f'invalid reply: {problem}'}
-        section.reply = reply
-        section.close(Status(reply['status']))
-        log.append(f'{sid}: {json.dumps(reply, ensure_ascii=False)}')
+            reply = {'status': 'failed', 'reason': f'invalid reply: {problem}'}
+        status = reply.pop('status')
+        record.reply = reply
+        record.close(status)
+        self._closed = record
+        missing: list[str] = []
+        if status == 'done':
+            # What the launch wrote: a declared file it did not write is not passed on as if it had.
+            record.files = {name: path for name, path in record.writes.items() if os.path.isfile(path)}
+            missing = [name for name in record.writes if name not in record.files]
+        line = f'{record.label}: {json.dumps({"status": status, **reply}, ensure_ascii=False)}'
+        log.append(line + (f' (did not write {", ".join(missing)})' if missing else ''))
         return state
 
     def _answer(self, run_dir: str, args: list[str]) -> RunState:
-        sid, answer = args[0], args[1]
+        label, answer = args[0], args[1]
         state = RunState.load(run_dir)
-        section = state.section(sid)
-        if section.status is not Status.WAITING_FOR_HUMAN:
-            raise CommandError(f'section {sid} is {section.status.value}, not waiting_for_human')
-        step = self.steps[section.name]
-        assert isinstance(step, HumanStep)
+        record = state.find(label)
+        if record.kind != 'human' or record.status != 'waiting':
+            raise CommandError(f'call {label} is {record.status}, not waiting for the human')
+        step = self.steps.get(record.step)
+        if not isinstance(step, HumanStep):
+            raise CommandError(f'`{label}` asks human step `{record.step}`, which flow.py does not declare')
         fields: dict[str, Any] = {}
         if step.reply:
             picked, fields = _parse_answer(answer, step)
@@ -1110,48 +1620,44 @@ class Runbook:
         choice = step.match(answer)
         if choice is None:
             raise CommandError('answer must be one of: ' + ' | '.join(step.choices))
-        section.note, section.answer = choice, words
-        if step.reply:
-            section.reply = {'choice': choice, **fields}
-        section.close(Status.DONE)
-        if step.writes:
-            with open(RunFiles(self.steps, run_dir, state).path(section, step.writes), 'w', encoding='utf-8') as f:
+        record.reply = {'choice': choice, **fields}
+        record.answer = words
+        record.files = dict(record.writes)
+        record.close('done')
+        for path in record.files.values():
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write(words.rstrip('\n') + '\n')
         log = ProgressLog(run_dir)
-        log.append(f'{sid}: answered: {choice}' + (f' {json.dumps(fields, ensure_ascii=False)}' if fields else ''))
+        log.append(
+            f'{record.label}: answered: {choice}' + (f' {json.dumps(fields, ensure_ascii=False)}' if fields else '')
+        )
         if words != choice:
-            log.append(f'{sid}: said: {words}')
+            log.append(f'{record.label}: said: {words}')
         return state
 
     def _interrupted(self, run_dir: str, args: list[str]) -> RunState:
-        return self._supersede(run_dir, args[0], NOTE_INTERRUPTED)
+        label = args[0]
+        state = RunState.load(run_dir)
+        record = state.find(label)
+        if record.kind != 'step' or record.status != 'running':
+            raise CommandError(f'interrupted: call {label} is {record.status}; accepts only a running step')
+        record.close('interrupted')
+        self._closed = record
+        ProgressLog(run_dir).append(f'{record.label}: interrupted')
+        return state
 
     def _relaunch(self, run_dir: str, args: list[str]) -> RunState:
-        return self._supersede(run_dir, args[0], NOTE_RELAUNCHED)
-
-    def _supersede(self, run_dir: str, sid: str, note: str) -> RunState:
+        label = args[0]
         state = RunState.load(run_dir)
-        section = state.section(sid)
-        if note == NOTE_INTERRUPTED:
-            if section.status is not Status.RUNNING:
-                raise CommandError(
-                    f'interrupted: section {sid} is {section.status.value}; accepts only running sections'
-                )
-        else:
-            step = self.steps[section.name]
-            if (
-                section.status not in (Status.FAILED, Status.BLOCKED)
-                or not isinstance(step, Step)
-                or not step.side_effects
-                or section.superseded
-            ):
-                raise CommandError(
-                    f'relaunch: section {sid} is {section.status.value}; '
-                    'accepts only failed or blocked sections of steps with side_effects that are not already superseded'
-                )
-        section.note = note
-        section.close(Status.FAILED)
-        ProgressLog(run_dir).append(f'{sid}: {note}')
+        record = state.find(label)
+        asked = Replay(self, state, run_dir).run().asks
+        if not any(r is record for r in asked):
+            raise CommandError(
+                f'relaunch: call {label} is {record.status}; accepts only a step with side_effects that ended failed, '
+                'blocked or interrupted and that the run asks the human about'
+            )
+        record.note = NOTE_RELAUNCHED
+        ProgressLog(run_dir).append(f'{record.label}: {NOTE_RELAUNCHED}')
         return state
 
     def _log(self, run_dir: str, args: list[str]) -> RunState:
@@ -1165,48 +1671,86 @@ class Runbook:
     # ---------- advancing ----------
 
     def _advance(self, run_dir: str, state: RunState) -> list[str]:
-        """Replays the run, opens sections for what is to launch, and returns the lines to print."""
-        assert self.start_step is not None
-        plan = Replay(self.steps, self.start_step, state).run()
+        """Replays the run and commits what it proposes until nothing is left to open or close, then writes the
+        records, their files and their log lines, and returns the lines to print.
+
+        A replay drives the groups and items it opens in the same pass, and a group that fails there has already
+        dropped the launches and questions inside it. So a command is one replay that opens and closes everything
+        the command leads to, plus at most one more that finds nothing to do.
+        """
+        files = RunFiles(run_dir)
+        opened: list[Proposal] = []
+        withdrawn: list[CallRecord] = []
+        schemas: dict[str, dict[str, Any]] = {}
+        indexes: dict[str, list[dict[str, Any]]] = {}
+        log: list[str] = []
+        while True:
+            replay = Replay(self, state, run_dir)
+            plan = replay.run()
+            if not plan.proposals and not plan.updates:
+                break
+            for proposal in plan.proposals:
+                record = proposal.record
+                record.started_at = utc_now()
+                assert record.kind in ('step', 'human') or record.position == len(state.calls)
+                state.append(record)
+                step = self.steps.get(record.step)
+                if step is not None and record.kind in ('step', 'human'):
+                    record.writes = {name: files.path(record, name) for name in _writes(step)}
+                    opened.append(proposal)
+                if record.kind == 'step' and record.schema is not None:
+                    schemas[files.schema_path(record)] = record.schema
+                    log.append(f'{record.label}: launched')
+                elif record.kind == 'human':
+                    log.append(f'{record.label}: asked: {proposal.question}')
+            for update in plan.updates:
+                record = update.record
+                for key, value in update.changes.items():
+                    setattr(record, key, value)
+                if update.index is not None:
+                    record.index = files.index_path(record)
+                    indexes[record.index] = update.index
+                record.close(update.status)
+                if record.kind == 'human' and update.status == 'cancelled':
+                    withdrawn.append(record)
+                    log.append(f'{record.label}: cancelled')
+                elif update.changes.get('note') == NOTE_CANCELLED:
+                    if record is not self._closed:
+                        withdrawn.append(record)
+                    log.append(f'{record.label}: {NOTE_CANCELLED}')
         renderer = Renderer(self, run_dir, state)
-        if self._correcting:
-            correction = renderer.correction(*self._correcting)
-            return [*correction, '', *self._next_lines(run_dir, state, plan, renderer)]
-        return self._next_lines(run_dir, state, plan, renderer)
-
-    def _next_lines(self, run_dir: str, state: RunState, plan: Plan, renderer: Renderer) -> list[str]:
-        if plan.ending and plan.waiting:
-            state.status = Status.RUNNING.value
-            return renderer.wait_for_end(plan.ending, plan.waiting)
+        lines = [*renderer.correction(*self._correcting), ''] if self._correcting else []
+        if withdrawn:
+            lines += [*renderer.withdrawn(withdrawn), '']
         if plan.ending:
-            status = plan.ending.end.status
-            if state.status != status:
-                ProgressLog(run_dir).append(f'end: {status} ({plan.ending.why})')
-            state.status = status
-            return renderer.ended(plan.ending)
-        opened = [self._open_section(run_dir, state, name, plan) for name in plan.launch]
-        lines = renderer.pending(plan, opened)
-        asking = any(s.status is Status.WAITING_FOR_HUMAN for s in state.sections)
-        state.status = Status.WAITING_FOR_HUMAN.value if asking else Status.RUNNING.value
-        return lines
-
-    def _open_section(self, run_dir: str, state: RunState, name: str, plan: Plan) -> Section:
-        step = self.steps[name]
-        log = ProgressLog(run_dir)
-        if isinstance(step, HumanStep):
-            section = state.new_section(name, Status.WAITING_FOR_HUMAN)
-            log.append(f'{section.id}: asked: {RunFiles(self.steps, run_dir, state).substitute(step.question)}')
+            running = [r for r in replay.latest.values() if r.status == 'running']
+            if running:
+                state.status = 'running'
+                lines += renderer.wait_for_end(plan.ending, running)
+            else:
+                status = plan.ending.end.status
+                if state.status != status:
+                    log.append(f'end: {status} ({plan.ending.why})')
+                state.status = status
+                lines += renderer.ended(plan.ending, replay.substitute(plan.ending.end.report, plan.ending.scope))
         else:
-            s = State(state.inputs, plan.done_count, failed_count=plan.failed_count)
-            executor = _resolve(step.executor, f'`executor` of step `{name}`', s)
-            section = state.new_section(name, Status.RUNNING, executor)
-            log.append(f'{section.id}: launched')
-            schema = RunFiles(self.steps, run_dir, state).schema_path(name)
-            os.makedirs(os.path.dirname(schema), exist_ok=True)
-            with open(schema, 'w', encoding='utf-8') as f:
-                json.dump(reply_schema(step.reply), f, indent=2)
+            lines += renderer.pending(plan, opened)
+            state.status = 'waiting_for_human' if plan.humans else 'running'
+        text = state.serialize()
+        for path, schema in schemas.items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(schema, f, indent=2)
                 f.write('\n')
-        return section
+        for path, rows in indexes.items():
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+                f.write('\n')
+        progress = ProgressLog(run_dir)
+        for line in log:
+            progress.append(line)
+        state.save(run_dir, text)
+        return lines
 
     # ---------- entry point ----------
 
@@ -1223,9 +1767,9 @@ class Runbook:
             return 1 if problems else 0
         run_dir = os.path.abspath(argv[1])
         try:
-            if self.start_step is None:
-                raise CommandError('no start step: call rb.start(<name>)')
-            self._correcting = None
+            if self.flow_fn is None:
+                raise CommandError('no flow: decorate the generator function of the flow with @rb.flow')
+            self._correcting = self._closed = None
             name = argv[2] if len(argv) > 2 else 'status'
             command = COMMANDS.get(name)
             if command is None:
@@ -1239,11 +1783,10 @@ class Runbook:
             if len(args) < command.min_args or too_many:
                 raise CommandError(f'usage: flow.py <run> {name} {command.usage}'.rstrip())
             state = command.handler(self, run_dir, args)
-            # What the command recorded is saved before the transition is computed: if a function of flow.py raises,
-            # the reply or the answer is not lost, and running flow.py on the run again takes it from there.
+            # What the command recorded is saved before the flow runs: if flow.py raises, the reply or the answer
+            # is not lost, and running flow.py on the run again takes it from there.
             state.save(run_dir)
             lines = self._advance(run_dir, state)
-            state.save(run_dir)
             print('\n'.join(lines))
             return 0
         except CommandError as e:
@@ -1256,6 +1799,24 @@ class Runbook:
                 file=sys.stderr,
             )
             return 2
+
+
+def _check_strings(step: str, parameter: str, values: Iterable[Any], empty_ok: bool = False) -> None:
+    """A declaration's names and texts are strings, and a name is not empty; anything else is refused here.
+
+    An empty question or side_effects passes: --check reports the question, and '' means no side effects.
+    """
+    for value in values:
+        if not isinstance(value, str) or (not value and not empty_ok):
+            raise TypeError(f'step {step!r}: {parameter} takes strings, got {value!r}')
+
+
+def _check_reply_names(step: str, reply: dict[str, Any] | None) -> None:
+    for name in reply or {}:
+        if name in RESERVED:
+            raise ValueError(
+                f'step {step!r}: reply field {name!r} is reserved: {", ".join(RESERVED)} are set by the engine'
+            )
 
 
 def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
@@ -1274,7 +1835,7 @@ def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
         return {}, f"field 'status' must be one of {', '.join(REPLY_STATUSES)}, got {json.dumps(reply['status'])}"
     # The schema has every property required and the unused ones null: a done reply's null reason and a failed
     # reply's null fields are dropped, so what is recorded is what was said.
-    done = reply['status'] == Status.DONE.value
+    done = reply['status'] == 'done'
     reply = {k: v for k, v in reply.items() if v is not None or (done and k != 'reason')}
     reason = reply.get('reason')
     if not done and not (isinstance(reason, str) and reason.strip()):
@@ -1282,8 +1843,8 @@ def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
     return reply, None
 
 
-def _reply_problem(reply: dict[str, Any], fields: dict[str, type]) -> str | None:
-    """What is wrong with a done reply against the step's declared reply fields, if anything."""
+def _reply_problem(reply: dict[str, Any], fields: dict[str, Any]) -> str | None:
+    """What is wrong with a done reply against the declared reply fields, if anything."""
     for name, declared in fields.items():
         if name not in reply:
             return f'no field {name!r}'
@@ -1318,6 +1879,12 @@ def _field_schema(declared: Any) -> dict[str, Any]:
     return {'type': JSON_TYPES[declared]} if isinstance(declared, type) else dict(declared)
 
 
+def _schema_fields(schema: dict[str, Any] | None) -> dict[str, Any]:
+    """The reply fields of a recorded reply schema, each as its own schema, as reply_schema() wrote them."""
+    properties = (schema or {}).get('properties', {})
+    return {name: p['anyOf'][0] for name, p in properties.items() if name not in ('status', 'reason')}
+
+
 def _type_names(schema: dict[str, Any]) -> list[str]:
     """The JSON type names a field's schema allows; empty when it names none."""
     wanted = schema.get('type', [])
@@ -1336,11 +1903,15 @@ def _field_problem(name: str, value: Any, declared: Any) -> str | None:
     return f'field {name!r} must be {" or ".join(names)}, got {json.dumps(value)}'
 
 
-def _reply_declaration_problems(step: AnyStep, reserved: tuple[str, ...]) -> list[str]:
+def _check_reply_declaration(step: AnyStep) -> None:
+    problems = _reply_declaration_problems(step)
+    if problems:
+        raise TypeError(problems[0])
+
+
+def _reply_declaration_problems(step: AnyStep) -> list[str]:
     problems = []
     for name, declared in step.reply.items():
-        if name in reserved:
-            problems.append(f'step {step.name}: reply field {name!r} is set by the engine')
         if not isinstance(declared, dict) and (not isinstance(declared, type) or declared not in JSON_TYPES):
             problems.append(
                 f'step {step.name}: reply field {name!r} is {declared!r}, '
@@ -1433,10 +2004,10 @@ def _parse_answer(raw: str, step: HumanStep) -> tuple[str, dict[str, Any]]:
 
 COMMANDS: dict[str, Command] = {
     'start': Command(Runbook._start, "['<inputs JSON>']", 0, 1),
-    'reply': Command(Runbook._reply, "<section> '<reply JSON>'", 2, 2),
-    'answer': Command(Runbook._answer, "<section> '<choice or JSON object>' ['<verbatim words>' | -]", 2, 3),
-    'interrupted': Command(Runbook._interrupted, '<section>', 1, 1),
-    'relaunch': Command(Runbook._relaunch, '<section>', 1, 1),
+    'reply': Command(Runbook._reply, "<call> '<reply JSON>'", 2, 2),
+    'answer': Command(Runbook._answer, "<call> '<choice or JSON object>' ['<verbatim words>' | -]", 2, 3),
+    'interrupted': Command(Runbook._interrupted, '<call>', 1, 1),
+    'relaunch': Command(Runbook._relaunch, '<call>', 1, 1),
     'log': Command(Runbook._log, "'<text>'", 1, None),
     'status': Command(Runbook._status, '', 0, 0),
 }

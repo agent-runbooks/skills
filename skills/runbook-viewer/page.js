@@ -1,6 +1,7 @@
 'use strict';
-const MARKS = { done: '✓', running: '●', waiting_for_human: '?', failed: '✗', blocked: '!' };
-const OPEN = ['running', 'waiting_for_human'];
+// The marks of the run's own status, for the tab title; an attempt's mark comes with it from the server.
+const RUN_MARKS = { ready: '✓', running: '●', waiting_for_human: '?', failed: '✗' };
+const OPEN = ['running', 'waiting'];
 const POLL_MS = 2000;
 // Run statuses with a chip colour of their own; running and any other end status stay grey.
 const CHIPS = { ready: 'ok', waiting_for_human: 'attention', needs_attention: 'attention', failed: 'failed' };
@@ -34,9 +35,9 @@ function parseTime(s) {
   return Number.isNaN(t) ? null : t;
 }
 
-function duration(section, now) {
-  const start = parseTime(section.started_at);
-  const stop = OPEN.includes(section.status) ? now : parseTime(section.ended_at);
+function duration(call, now) {
+  const start = parseTime(call.started_at);
+  const stop = OPEN.includes(call.status) ? now : parseTime(call.ended_at);
   if (start === null || stop === null) return '';
   const total = Math.max(0, Math.floor((stop - start) / 1000));
   const h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, s = total % 60;
@@ -44,31 +45,21 @@ function duration(section, now) {
   return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-function summary(section) {
-  const reply = section.reply || {};
-  if (section.status === 'waiting_for_human') return 'waiting for the human';
-  if (section.status === 'failed' || section.status === 'blocked') return section.note || reply.reason || '';
-  if (section.status !== 'done') return '';
-  if (!section.reply) return section.note || '';
-  return Object.entries(reply).filter(([k]) => k !== 'status')
-    .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
-}
-
 function serverNow() {
   return Date.now() + clockOffset;
 }
 
 function followTarget() {
-  const sections = data.state.sections;
-  const open = sections.find((s) => OPEN.includes(s.status));
-  const last = open || sections[sections.length - 1];
-  if (last) return { kind: 'section', id: last.id };
+  const calls = data.calls;
+  const open = calls.find((c) => OPEN.includes(c.status));
+  const last = open || calls[calls.length - 1];
+  if (last) return { kind: 'call', label: last.label };
   return data.run_files.length ? { kind: 'file', name: data.run_files[0] } : null;
 }
 
 function readHash() {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.has('section')) return { kind: 'section', id: params.get('section') };
+  if (params.has('call')) return { kind: 'call', label: params.get('call') };
   if (params.has('file')) return { kind: 'file', name: params.get('file') };
   return null;
 }
@@ -76,7 +67,7 @@ function readHash() {
 function select(target) {
   follow = false;
   selection = target;
-  history.replaceState(null, '', '#' + new URLSearchParams(target.kind === 'section' ? { section: target.id } : { file: target.name }));
+  history.replaceState(null, '', '#' + new URLSearchParams(target.kind === 'call' ? { call: target.label } : { file: target.name }));
   render();
 }
 
@@ -87,7 +78,7 @@ function setFollow() {
 }
 
 function sameSelection(a, b) {
-  return a && b && a.kind === b.kind && a.id === b.id && a.name === b.name;
+  return a && b && a.kind === b.kind && a.label === b.label && a.name === b.name;
 }
 
 function renderHeader() {
@@ -97,7 +88,7 @@ function renderHeader() {
   const status = $('status');
   status.textContent = st.status || '';
   status.className = CHIPS[st.status] ? 'chip-' + CHIPS[st.status] : '';
-  document.title = `${MARKS[st.status === 'ready' ? 'done' : st.status] || '·'} ${data.name}`;
+  document.title = `${RUN_MARKS[st.status] || '·'} ${data.name}`;
   const inputs = Object.entries(st.inputs || {});
   $('inputs').innerHTML = inputs.map(([k, v]) =>
     `<dt>${esc(k)}</dt><dd>${esc(typeof v === 'string' ? v : JSON.stringify(v))}</dd>`).join('');
@@ -105,20 +96,20 @@ function renderHeader() {
 }
 
 function renderNav() {
-  const key = JSON.stringify([data.state.sections, data.run_files, selection, follow]);
+  const key = JSON.stringify([data.calls, data.run_files, selection, follow]);
   if (key === navKey) return;
   navKey = key;
   const now = serverNow();
-  const rows = data.state.sections.map((s) => {
-    const live = s.status === 'running' ? ' live' : '';
-    const selected = selection && selection.kind === 'section' && selection.id === s.id ? ' selected' : '';
-    const dur = OPEN.includes(s.status) && s.started_at ? ` data-start="${esc(s.started_at)}"` : '';
-    return `<div class="row ${esc(s.status)}${selected}" role="button" tabindex="0" data-section="${esc(s.id)}">` +
-      `<span class="mark-${esc(s.status)}${live}">${MARKS[s.status] || ' '}</span>` +
-      `<span>${esc(s.id)}</span><span class="exec">${esc(s.executor || '')}</span>` +
-      `<span class="dur"${dur}>${duration(s, now)}</span><span title="${esc(summary(s))}">${esc(summary(s))}</span></div>`;
+  const rows = data.calls.map((c) => {
+    const live = c.status === 'running' ? ' live' : '';
+    const selected = selection && selection.kind === 'call' && selection.label === c.label ? ' selected' : '';
+    const dur = OPEN.includes(c.status) && c.started_at ? ` data-start="${esc(c.started_at)}"` : '';
+    return `<div class="row ${esc(c.status)}${selected}" role="button" tabindex="0" data-call="${esc(c.label)}">` +
+      `<span class="mark-${esc(c.status)}${live}">${esc(c.mark)}</span>` +
+      `<span>${esc(c.name)}</span><span class="exec">${esc(c.executor || '')}</span>` +
+      `<span class="dur"${dur}>${duration(c, now)}</span><span title="${esc(c.note)}">${esc(c.note)}</span></div>`;
   });
-  $('sections').innerHTML = rows.join('') || '<div class="empty">No section has launched yet.</div>';
+  $('calls').innerHTML = rows.join('') || '<div class="empty">No step has launched yet.</div>';
   $('run-files').innerHTML = data.run_files.map((name) => {
     const selected = selection && selection.kind === 'file' && selection.name === name ? ' selected' : '';
     return `<button type="button" class="file-link${selected}" data-file="${esc(name)}">${esc(name)}</button>`;
@@ -179,18 +170,16 @@ function detailParts() {
     if (!data.run_files.includes(selection.name)) return null;
     return { title: selection.name, meta: '', log: [], files: [selection.name], ask: null };
   }
-  const index = data.state.sections.findIndex((s) => s.id === selection.id);
-  if (index < 0) return null;
-  const section = data.state.sections[index];
-  const extra = data.sections[index];
+  const call = data.calls.find((c) => c.label === selection.label);
+  if (!call) return null;
   let ask = null;
-  if (section.status === 'waiting_for_human') {
-    const prefix = `- ${section.id}: asked: `;
-    const line = extra.log.find((l) => l.startsWith(prefix));
+  if (call.status === 'waiting') {
+    const prefix = `- ${call.label}: asked: `;
+    const line = call.log.find((l) => l.startsWith(prefix));
     ask = line ? line.slice(prefix.length) : '';
   }
-  const meta = [section.status, section.executor].filter(Boolean).join(' · ');
-  return { title: section.id, meta, log: extra.log, files: extra.files, ask };
+  const meta = [call.status, call.executor].filter(Boolean).join(' · ');
+  return { title: call.name, meta, log: call.log, files: call.files, ask };
 }
 
 async function renderDetail() {
@@ -206,7 +195,7 @@ async function renderDetail() {
   if (!parts) {
     pendingKey = null;
     shown = { key, selection };
-    detail.innerHTML = '<p class="empty">Select a section or a file.</p>';
+    detail.innerHTML = '<p class="empty">Select a call or a file.</p>';
     return;
   }
   pendingKey = key;
@@ -251,6 +240,10 @@ async function poll() {
       clockOffset = first || Math.abs(offset - clockOffset) > 2000 ? offset : Math.max(clockOffset, offset);
       $('notice').hidden = true;
       render();
+    } else if (res.status !== 503) {
+      // 503 is state.json caught mid-write, retried quietly; anything else, as a state of another format, is shown.
+      $('notice').textContent = await res.text();
+      $('notice').hidden = false;
     }
   } catch (e) {
     $('notice').textContent = 'The viewer is not reachable. Showing the last state it sent.';
@@ -267,15 +260,15 @@ function tick() {
   }
 }
 
-$('sections').addEventListener('click', (e) => {
-  const row = e.target.closest('[data-section]');
-  if (row) select({ kind: 'section', id: row.dataset.section });
+$('calls').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-call]');
+  if (row) select({ kind: 'call', label: row.dataset.call });
 });
-$('sections').addEventListener('keydown', (e) => {
-  const row = e.target.closest('[data-section]');
+$('calls').addEventListener('keydown', (e) => {
+  const row = e.target.closest('[data-call]');
   if (row && (e.key === 'Enter' || e.key === ' ')) {
     e.preventDefault();
-    select({ kind: 'section', id: row.dataset.section });
+    select({ kind: 'call', label: row.dataset.call });
   }
 });
 $('run-files').addEventListener('click', (e) => {

@@ -127,9 +127,9 @@ nav {
 .row .dur { text-align: right; font-variant-numeric: tabular-nums; }
 .mark-done { color: var(--done); }
 .mark-running { color: var(--running); }
-.mark-waiting_for_human { color: var(--waiting); font-weight: 700; }
-.mark-failed, .mark-blocked { color: var(--failed); }
-.row.waiting_for_human > span, .row.waiting_for_human > span:last-child { color: var(--waiting); }
+.mark-waiting { color: var(--waiting); font-weight: 700; }
+.mark-failed, .mark-blocked, .mark-interrupted, .mark-cancelled { color: var(--failed); }
+.row.waiting > span, .row.waiting > span:last-child { color: var(--waiting); }
 .mark-running.live { animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .mark-running.live { animation: none; } }
@@ -219,8 +219,8 @@ pre {
 </header>
 <main>
   <nav>
-    <div class="nav-head"><span class="label">Sections</span><button id="follow" type="button" aria-pressed="true">following</button></div>
-    <div class="rows" id="sections"></div>
+    <div class="nav-head"><span class="label">Calls</span><button id="follow" type="button" aria-pressed="true">following</button></div>
+    <div class="rows" id="calls"></div>
     <div class="files"><span class="label">Run files</span><div id="run-files"></div></div>
   </nav>
   <section id="detail" aria-live="polite"></section>
