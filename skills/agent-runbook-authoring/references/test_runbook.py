@@ -36,6 +36,10 @@ class RunbookTestCase(unittest.TestCase):
         self.run_dir = os.path.join(self.root, 'run')
         self.cmd = f'{sys.executable} {self.here}/flow.py'
         self.messages: dict[str, list[str]] = {}
+        environ = mock.patch.dict(os.environ)
+        environ.start()
+        self.addCleanup(environ.stop)
+        os.environ.pop('UV', None)
         self.minute = 0
         clock = mock.patch.object(runbook, 'utc_now', self.tick)
         clock.start()
@@ -2277,6 +2281,22 @@ class ShellCommandTest(RunbookTestCase):
         err = self.fails(rb, 'reply', 'main/work#2@2', '{"status": "done"}')
         command = err.split('Once it is fixed, the run goes on with: ', 1)[1].strip()
         self.assertEqual(shlex.split(command), prefix)
+
+    def test_under_uv_run_commands_go_through_uv(self) -> None:
+        def declare(rb: Runbook) -> None:
+            work = rb.step('work', executor='main', prompt='prompts/a.md')
+
+            @rb.flow
+            def main(ctx):
+                yield work()
+                return end('done')
+
+        os.environ['UV'] = '/usr/local/bin/uv'
+        rb = self.runbook(declare)
+        self.assertIn(
+            f"when it finishes: uv run {self.here}/flow.py {self.run_dir} reply main/work '<the last JSON object of its message>'",
+            self.start(rb),
+        )
 
 
 if __name__ == '__main__':

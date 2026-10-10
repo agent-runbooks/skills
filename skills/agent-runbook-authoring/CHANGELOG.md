@@ -14,6 +14,7 @@ What to change in an existing `flow.py`:
 - `s.done(name)`, `s.failed(name)`, `s.reply(name)` and `s.replies(name)` are local variables of the generator. `executor=lambda s: ...` is `step(executor=...)` at the call.
 - A step after a group reads the group's files through an explicit pass, `yield triage(reviews=reviews)`, and its prompt names them as `reviews.a/review-a.md`. Its `reads` no longer see files written inside the group.
 - Step names, group names and branch keys are letters, digits, `_ . -`, since they are parts of an address. A reply field named `id`, `files`, `status`, `reason` or `choice` is refused at declaration: those are the engine's attributes on a result. So is a reply field that is neither a JSON type nor a schema, which 1.x left to `--check`. `executor` of a step is a declared name only.
+- A `flow.py` that declares the engine from PyPI raises its pin to `agent-runbooks>=2.0.0,<3`.
 
 What changes for the orchestrator: commands, texts and the progress log keep their 1.x shape, with a call's address in place of a section id. An address is a path, `main/review`, `main/review#2` for the second call of `review` in the same generator, `main/reviews/a` for a branch, `main/migrate[auth]/verify` inside an item, and `main/review@2` for the second attempt of a call; printed commands quote it for the shell. The end line says ``after `<address>` `` where 1.x said ``after step `<id>` ``.
 
@@ -25,6 +26,13 @@ What changes for the orchestrator: commands, texts and the progress log keep the
 - A reply is checked against the contract recorded with its attempt: the reply schema written for it, its executor, inputs and files. The schema file is per attempt, `<run>/schemas/<NN>-<step>.json`, so a later launch of the step under a changed declaration does not rewrite the file a running executor fits.
 - `state.json` is format 2, a list of `calls`, each attempt of a call one record: steps and human steps, and the records of groups and items, which take positions in the file numbering too. An engine reading another format refuses the run. `start` refuses a directory that holds a `state.json`; an existing directory without one is used.
 - `--check` checks declarations only: executors, prompts, inputs, questions, `repo`, `prompts/common.md`, and that a flow is declared; `@rb.flow` refuses a function that is not a generator. Routes are walked by hand with `start` and `reply`.
+
+## 1.4.4
+
+No change is required in an existing `flow.py` or for the orchestrator.
+
+- The engine is on PyPI as `agent-runbooks`, imported as `agent_runbooks`, from this release on. A runbook can declare it in `flow.py` and run through `uv run` instead of carrying a copy: `references/template.md`, The engine from PyPI.
+- Under `uv run`, the commands `flow.py` prints start with `uv run <flow.py>`. They used to name the interpreter of uv's cached environment, which `uv cache clean` deletes.
 
 ## 1.4.3
 

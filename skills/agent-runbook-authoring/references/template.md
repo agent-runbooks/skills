@@ -12,7 +12,7 @@ runbook-<name>/
     <nn>-<step>.md  one file per step: the task, the deliverable, what the reply's fields mean
 ```
 
-Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`runbook.py`](runbook.py) into the runbook directory. `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
+Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`runbook.py`](runbook.py) into the runbook directory. An author with several runbooks can take the engine from PyPI instead of copying it, see [The engine from PyPI](#the-engine-from-pypi). `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
 
 Three placeholders are never filled by the author. `<repo>` is the repository the steps work in: the directory the runbook is invoked in, or an input when the code lives elsewhere, in a worktree for instance. It is always among the run's inputs. `<run>` is the run directory. `<skill>` is the directory this `SKILL.md` was loaded from. In prompts, repository files are `<repo>/…`, input files are `<run>/…`, and step outputs are named without a path, `checks.md`: the launch message gives each its numbered path.
 
@@ -137,6 +137,38 @@ Your final message is one JSON object that fits the schema in the file your laun
 ````
 
 The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine writes it to `<run>/schemas/<NN>-<step>.json` for each launch and gives the executor its path in the launch message.
+
+## The engine from PyPI
+
+From 1.4.4 each release of `runbook.py` is also on PyPI as `agent-runbooks`, imported as `agent_runbooks`. A runbook can declare the release it needs instead of carrying a copy, and [uv](https://docs.astral.sh/uv/) downloads it once for every runbook that declares it. Such a runbook runs only where uv is installed; one with the copy needs only `python3`. Three things change:
+
+- The runbook directory has no `runbook.py`. `flow.py` declares the engine under its shebang and imports it by the package's name. The steps and the generator under `@rb.flow` are written as [`flow-language.md`](flow-language.md) shows:
+
+  ```python
+  #!/usr/bin/env python3
+  # /// script
+  # requires-python = ">=3.9"
+  # dependencies = ["agent-runbooks>=2.0.0,<3"]
+  # ///
+  """Steps and the flow of runbook-<name>. Run with --help for the commands."""
+
+  from agent_runbooks import Runbook, StepFailed, end, foreach, parallel
+
+  rb = Runbook()
+  # inputs, executors, steps
+
+
+  @rb.flow
+  def main(ctx):
+      ...
+
+
+  if __name__ == '__main__':
+      raise SystemExit(rb.main())
+  ```
+
+- In the Execution rules copied into `SKILL.md`, every `python3 <skill>/flow.py` becomes `uv run <skill>/flow.py`. The commands `flow.py` prints start with `uv run` on their own.
+- The author checks with `uv run flow.py --check` and walks the scratch run with `uv run flow.py`.
 
 ## Notes for the author
 

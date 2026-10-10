@@ -1,9 +1,20 @@
-# Dev tooling only: the skills ship without it and run on the standard library.
+# The engine's PyPI package and the dev tooling. The skills ship without this file and run on the standard library.
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
 [project]
-name = "agent-runbooks-skills"
-version = "0"
+name = "agent-runbooks"
+dynamic = ["version"]
+description = "The engine behind a runbook's flow.py"
+readme = "skills/agent-runbook-authoring/README.md"
 requires-python = ">=3.9"
+license-files = ["LICENSE"]
+
+[project.urls]
+Source = "https://github.com/agent-runbooks/skills/tree/main/skills/agent-runbook-authoring"
+Changelog = "https://github.com/agent-runbooks/skills/blob/main/skills/agent-runbook-authoring/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -11,8 +22,22 @@ dev = [
   "ruff==0.16.10",
 ]
 
+# uv sync leaves the package out: the dev environment needs only the tools.
 [tool.uv]
 package = false
+
+[tool.hatch.version]
+path = "skills/agent-runbook-authoring/references/runbook.py"
+
+# The wheel is the engine alone, renamed so it never shadows or is shadowed by a runbook's own runbook.py.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills/agent-runbook-authoring/references/runbook.py" = "agent_runbooks.py"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["skills/agent-runbook-authoring/references/runbook.py", "skills/agent-runbook-authoring/README.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 120

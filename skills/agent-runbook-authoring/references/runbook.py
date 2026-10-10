@@ -18,6 +18,7 @@ declares reply fields. One argument may be `-` to read it from stdin, for text w
 
 Source: https://github.com/agent-runbooks/skills/tree/main/skills/agent-runbook-authoring
 Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the flow.py API: CHANGELOG.md there.
+From 1.4.4 each release is also on PyPI as agent-runbooks, imported as agent_runbooks.
 """
 
 from __future__ import annotations
@@ -1398,7 +1399,9 @@ class Runbook:
         # Holds for this command only: if its flow raises, the next command withdraws the question though none was asked.
         self._closed: CallRecord | None = None
         flow = os.path.join(self.here, os.path.basename(sys.argv[0]))
-        self.cmd = f'{shlex.quote(sys.executable)} {shlex.quote(flow)}'
+        # Under `uv run`, sys.executable is an environment in uv's cache, gone after `uv cache clean`.
+        launcher = 'uv run' if 'UV' in os.environ else shlex.quote(sys.executable)
+        self.cmd = f'{launcher} {shlex.quote(flow)}'
 
     def inputs(self, **spec: Any) -> None:
         """Inputs of a run. A type (str, int, bool) is required; a value is a default of its type."""

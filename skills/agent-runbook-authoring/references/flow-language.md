@@ -1,6 +1,6 @@
 # Writing flow.py
 
-`flow.py` declares the steps of a runbook in Python, on top of `runbook.py`, which is copied from this skill unchanged, and writes the flow as one generator that calls them. `flow.py` is also the command the orchestrator runs: `runbook.py` gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.0; the 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
+`flow.py` declares the steps of a runbook in Python, on top of `runbook.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows, and writes the flow as one generator that calls them. `flow.py` is also the command the orchestrator runs: `runbook.py` gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.0; the 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ```python
 #!/usr/bin/env python3
