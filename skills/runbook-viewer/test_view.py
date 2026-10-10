@@ -166,11 +166,21 @@ class StatusTest(unittest.TestCase):
             ['… 8 rows above', '  foreach modules: 1 done, 2 running, 1 not started', '  · [docs]  not started'],
         )
 
+    def test_tail_goes_with_status(self) -> None:
+        for tail in ['10', '0']:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                view.main([NESTED, '--tail', tail])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn('view.py: error: --tail goes with --status', err.getvalue())
+
     def test_readme_shows_the_fixtures(self) -> None:
         with open(os.path.join(HERE, 'README.md'), encoding='utf-8') as f:
             samples = f.read().split('```\n')
         self.assertEqual(samples[1], view.status_text(RUNNING, NOW_RUNNING) + '\n')
         self.assertEqual(samples[3], view.status_text(NESTED, NOW_NESTED, tail=3) + '\n')
+        with open(os.path.join(HERE, '..', '..', 'README.md'), encoding='utf-8') as f:
+            self.assertIn('```\n' + view.status_text(RUNNING, NOW_RUNNING) + '\n```\n', f.read())
 
     def test_duration_without_timestamps_is_empty(self) -> None:
         self.assertEqual(view.duration({'status': 'running'}, NOW_READY), '')
@@ -478,6 +488,30 @@ class RowsTest(unittest.TestCase):
             self.assertEqual(case[0]['counts'], '1 done, 1 running')
             self.assertEqual((a['status'], a['mark'], a['step'], a['note']), ('done', '✓', 'sites', ''))
         self.assertEqual(next(e for e in skipped if e['id'] == 'main/p/a')['ended_at'], '2026-10-07T09:02:00Z')
+
+    def test_a_cancelled_parallel_shows_how_its_branches_ended(self) -> None:
+        def record(address: str, kind: str, status: str, **fields) -> dict:
+            times = {'started_at': '2026-10-07T09:00:00Z', 'ended_at': '2026-10-07T09:01:00Z'}
+            step = address.rsplit('/', 1)[-1]
+            return {'id': address, 'attempt': 1, 'kind': kind, 'step': step, 'status': status, **fields, **times}
+
+        # As the engine closes a nested parallel that a failing group cuts while a branch still has a step to launch.
+        lines = view.layout(
+            {
+                'calls': [
+                    record('main/p', 'parallel', 'failed', branches={'a': 'failed', 'b': 'cancelled'}),
+                    record('main/p/a', 'step', 'failed', reply={'reason': 'boom'}),
+                    record('main/p/b/s1', 'step', 'done'),
+                    record('main/p/b/inner', 'parallel', 'cancelled', branches={'x': 'done', 'y': 'cancelled'}),
+                    record('main/p/b/inner/x', 'step', 'done'),
+                    record('main/p/b/inner/y/s2', 'step', 'done'),
+                ]
+            }
+        )
+        inner = next(e for e in lines if e['id'] == 'main/p/b/inner')
+        y = next(e for e in lines if e['id'] == 'main/p/b/inner/y')
+        self.assertEqual(inner['counts'], '1 done, 1 cancelled')
+        self.assertEqual((y['status'], y['mark'], y['note']), ('cancelled', '✗', 'cancelled'))
 
     def test_groups_sit_where_they_opened(self) -> None:
         lines = view.snapshot(NESTED, NOW_NESTED)['rows']

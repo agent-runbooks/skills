@@ -1,6 +1,6 @@
 'use strict';
 // The marks of the run's own status, for the tab title; an attempt's mark comes with it from the server.
-const RUN_MARKS = { ready: '✓', running: '●', waiting_for_human: '?', failed: '✗' };
+const RUN_MARKS = { ready: '✓', running: '●', waiting_for_human: '?', needs_attention: '!', failed: '✗' };
 const OPEN = ['running', 'waiting'];
 const GROUPS = ['parallel', 'foreach'];
 const POLL_MS = 2000;

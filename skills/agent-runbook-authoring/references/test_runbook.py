@@ -573,6 +573,38 @@ class ParallelTest(RunbookTestCase):
             (group['status'], group['branches']), ('failed', {'a': 'failed', 'b': 'cancelled', 'c': 'cancelled'})
         )
 
+    def test_a_parallel_cancelled_by_a_failing_group_records_how_its_branches_ended(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            a, m, s1, s2, s3 = (
+                rb.step(n, executor=strong, prompt='prompts/a.md') for n in ('a', 'm', 's1', 's2', 's3')
+            )
+
+            def chain2(ctx):
+                yield s2()
+                yield s3()
+
+            def chain(ctx):
+                yield s1()
+                yield parallel('inner', x=m(), y=chain2)
+
+            @rb.flow
+            def main(ctx):
+                yield parallel('p', a=a(), b=chain)
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.reply(rb, 'main/p/b/s1')
+        self.reply(rb, 'main/p/b/inner/x')
+        self.assertEqual(self.fail_step(rb, 'main/p/a').strip(), 'still running: `main/p/b/inner/y/s2`')
+        out = self.reply(rb, 'main/p/b/inner/y/s2')
+        self.assertTrue(out.startswith('end: failed (`main/p/a` failed: broken)'), out)
+        self.assertNotIn('main/p/b/inner/y/s3', json.dumps(self.state()))
+        inner, p = self.record('main/p/b/inner'), self.record('main/p')
+        self.assertEqual((inner['status'], inner['branches']), ('cancelled', {'x': 'done', 'y': 'cancelled'}))
+        self.assertEqual((p['status'], p['branches']), ('failed', {'a': 'failed', 'b': 'cancelled'}))
+
     def test_a_group_that_fails_once_driven_launches_and_asks_nothing_beside_it(self) -> None:
         def declare(rb: Runbook) -> None:
             strong, _ = executors(rb)
@@ -1222,6 +1254,11 @@ class InputsTest(RunbookTestCase):
         err = self.fails(self.rb, 'start', '{"repo": "/repo"}')
         self.assertIn("input 'ticket' is required", err)
         self.assertFalse(os.path.exists(self.run_dir))
+
+    def test_a_default_is_not_shared_between_runs(self) -> None:
+        spec = {'tags': ['x']}
+        agent_runbooks._resolve_inputs(spec, {})['tags'].append('y')
+        self.assertEqual(agent_runbooks._resolve_inputs(spec, {})['tags'], ['x'])
 
     def test_wrong_types(self) -> None:
         err = self.fails(self.rb, 'start', '{"repo": "/repo", "ticket": 5, "rounds": true, "strict": "yes"}')
@@ -1970,6 +2007,47 @@ class FlowTest(RunbookTestCase):
         self.assertNotIn('Traceback', err)
         self.assertEqual(self.record('main/work')['status'], 'done')
         self.assertEqual(len(self.state()['calls']), 1)
+
+    def test_what_the_flow_changes_in_recorded_json_stays_out_of_state_json(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            a = rb.step('a', executor=strong, prompt='prompts/a.md', reply={'found': list})
+            plan = rb.step('plan', executor=strong, prompt='prompts/b.md', writes=['items.json'])
+            work = rb.step('work', executor=strong, prompt='prompts/c.md', reply={'found': list})
+            b = rb.step('b', executor=strong, prompt='prompts/d.md')
+
+            def body(ctx, item):
+                item.tags.append('seen')
+                r = yield work()
+                return {'found': r.found}
+
+            @rb.flow
+            def main(ctx):
+                ctx.inputs.tags.append('seen')
+                r = yield a()
+                r.found.append('local')
+                yield plan()
+                done = yield foreach('items', over='items.json', body=body)
+                done.items[0].reply['found'].append('local')
+                yield b()
+                return end('ready')
+
+        rb = self.runbook(declare, tags=['x'])
+        self.start(rb)
+        self.reply(rb, 'main/a', found=[])
+        self.reply(rb, 'main/plan', contents={'items.json': json.dumps([{'key': 'k', 'tags': []}])})
+        self.assertEqual(self.launched(self.reply(rb, 'main/items[k]/work', found=[])), ['main/b'])
+        state = self.state()
+        self.call(rb)
+        self.call(rb)
+        self.assertEqual(self.state(), state)
+        self.assertEqual(state['inputs']['tags'], ['x'])
+        self.assertEqual(self.record('main/a')['reply'], {'found': []})
+        self.assertEqual(self.record('main/items')['items'], [{'key': 'k', 'tags': []}])
+        item = self.record('main/items[k]')
+        self.assertEqual((item['fields'], item['reply']), ({'key': 'k', 'tags': []}, {'found': []}))
+        with open(self.record('main/items')['index']) as f:
+            self.assertEqual(json.load(f)[0]['reply'], {'found': []})
 
     def test_what_the_flow_yields_passes_and_returns_is_checked(self) -> None:
         def flows(rb: Runbook) -> dict[str, Callable[..., Any]]:

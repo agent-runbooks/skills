@@ -653,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='view.py', description='Show a runbook run.')
     parser.add_argument('run', help='a run directory, or a directory of runs')
     parser.add_argument('--status', action='store_true', help='print the text status and exit')
-    parser.add_argument('--tail', type=int, default=0, help='with --status, only the last N rows')
+    parser.add_argument('--tail', type=int, help='with --status, only the last N rows')
     parser.add_argument('--port', type=int, default=0, help='port to serve on, a free one by default')
     parser.add_argument(
         '--idle-minutes',
@@ -662,10 +662,12 @@ def main(argv: list[str] | None = None) -> int:
         help=f'stop after this many minutes without a request, {IDLE_MINUTES} by default; 0 never stops',
     )
     args = parser.parse_args(argv)
+    if args.tail is not None and not args.status:
+        parser.error('--tail goes with --status')
     try:
         run = find_run(args.run)
         if args.status:
-            print(status_text(run, datetime.now(timezone.utc), args.tail))
+            print(status_text(run, datetime.now(timezone.utc), args.tail or 0))
             return 0
         with contextlib.suppress(StateUnreadable):
             read_state(run)

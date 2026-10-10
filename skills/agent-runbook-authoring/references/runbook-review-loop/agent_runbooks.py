@@ -32,6 +32,7 @@ import sys
 if sys.version_info < (3, 9):
     sys.exit(f'agent_runbooks.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
 
+import copy
 import inspect
 import json
 import os
@@ -103,7 +104,7 @@ class Context:
     """What every generator of the flow gets first: `ctx.inputs.<name>` are the run's inputs."""
 
     def __init__(self, inputs: dict[str, Any]) -> None:
-        self.inputs = SimpleNamespace(**inputs)
+        self.inputs = SimpleNamespace(**copy.deepcopy(inputs))
 
 
 @dataclass(frozen=True)
@@ -692,6 +693,9 @@ class Replay:
     A group or an item record the replay proposes takes its place in state.json at once, after the recorded calls
     and the records proposed before it, and is indexed as if recorded: what is inside it is driven in the same
     pass, and its index file has a path. Launches take the places after them when the command commits them.
+
+    The flow gets copies of the recorded JSON: inputs, replies, items' fields and results. What it changes in them
+    stays out of state.json.
     """
 
     def __init__(self, rb: Runbook, state: RunState, run_dir: str) -> None:
@@ -709,6 +713,8 @@ class Replay:
         self._updated: set[int] = set()
         # The rows of the index files this replay's updates write, by path: on disk only once the command commits.
         self.indexes: dict[str, list[dict[str, Any]]] = {}
+        # What an open parallel records if a failing group cancels it, by id() of its record: how its branches stand.
+        self.cut: dict[int, dict[str, Any]] = {}
 
     def run(self) -> Plan:
         top = Frame('main', None, {})
@@ -820,13 +826,13 @@ class Replay:
             return Pending()
         if record.status == 'done':
             frame.files.update(record.files)
-            return Returned(_result(StepResult, record.reply, address, record.files))
+            return Returned(_result(StepResult, copy.deepcopy(record.reply), address, record.files))
         side_effects = isinstance(step, Step) and step.side_effects
         if record.note == NOTE_RELAUNCHED or (record.status == 'interrupted' and not side_effects):
             return Pending(proposals=[self._propose(call, address, frame, record.attempt + 1)])
         if side_effects:
             return Pending(asks=[record])
-        return Raised(StepFailed(id=address, reply={'status': record.status, **(record.reply or {})}))
+        return Raised(StepFailed(id=address, reply={'status': record.status, **copy.deepcopy(record.reply or {})}))
 
     def _propose(self, call: Call, address: str, frame: Frame, attempt: int) -> Proposal:
         step = call.step
@@ -888,6 +894,7 @@ class Replay:
             branches = {key: _branch_status(outcome) for key, outcome in outcomes.items()}
             return self._fail(record, failure, pending, branches=branches)
         if any(isinstance(outcome, Pending) for outcome in outcomes.values()):
+            self.cut[id(record)] = {'branches': {key: _branch_status(outcome) for key, outcome in outcomes.items()}}
             return pending
         self._update(record, 'done', branches={key: 'done' for key in outcomes})
         results = {key: outcome.value for key, outcome in outcomes.items() if isinstance(outcome, Returned)}
@@ -964,7 +971,10 @@ class Replay:
         frame.files[index_name] = index_path
         results = [
             _result(
-                ItemResult, {k: v for k, v in row.items() if k != 'files'}, f'{address}[{row["key"]}]', row['files']
+                ItemResult,
+                copy.deepcopy({k: v for k, v in row.items() if k != 'files'}),
+                f'{address}[{row["key"]}]',
+                row['files'],
             )
             for row in rows
         ]
@@ -977,7 +987,7 @@ class Replay:
             if isinstance(outcome, Returned):
                 outcome = Returned(dict(vars(outcome.value)))
         else:
-            outcome = self._drive(group.body, (self.ctx, SimpleNamespace(**item)), item_frame)
+            outcome = self._drive(group.body, (self.ctx, SimpleNamespace(**copy.deepcopy(item))), item_frame)
         if isinstance(outcome, Returned) and not _is_json(outcome.value):
             raise FlowError(
                 f'`{record.id}`: the body returned {outcome.value!r}, and an item returns a JSON value, its reply'
@@ -1017,13 +1027,13 @@ class Replay:
                     self._update(item, 'cancelled', files=row['files'])
         for group in pending.groups:
             if group is not record:
-                self._update(group, 'cancelled')
+                self._update(group, 'cancelled', **self.cut.get(id(group), {}))
         self._update(record, 'failed', **close)
         return Raised(failure)
 
 
 def _branch_status(outcome: Outcome) -> str:
-    """How a branch of a failed parallel ended: done, failed, or cancelled while it had more to do."""
+    """How a branch of a failed or cancelled parallel ended: done, failed, or cancelled while it had more to do."""
     if isinstance(outcome, Returned):
         return 'done'
     return 'failed' if isinstance(outcome, Raised) else 'cancelled'
@@ -1081,9 +1091,6 @@ def _pass(address: str, key: str, value: Any, inputs: dict[str, Any], reads: dic
         raise FlowError(f'`{address}`: input {key!r} is {value!r}; a call takes JSON values and results')
 
 
-ITEM_KEY = NAME
-
-
 def _read_items(
     path: str | None, group: Foreach, proposed: dict[str, list[dict[str, Any]]]
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -1117,7 +1124,7 @@ def _read_items(
         key = item.get('key') if isinstance(item, dict) else None
         if not isinstance(item, dict):
             return [], f'item {i} of {path} is not a JSON object'
-        if not isinstance(key, str) or not ITEM_KEY.fullmatch(key):
+        if not isinstance(key, str) or not NAME.fullmatch(key):
             return [], f'item {i} of {path} has key {json.dumps(key)}, not a string of letters, digits, _ . -'
         if key in seen:
             return [], f'item {i} of {path} repeats key {key!r}'
@@ -1404,7 +1411,7 @@ def _resolve_inputs(spec: dict[str, Any], given: dict[str, Any]) -> dict[str, An
         elif required:
             problems.append(f'input {name!r} is required')
         else:
-            inputs[name] = declared
+            inputs[name] = copy.deepcopy(declared)
     problems += [f'input {name!r} is not declared' for name in given if name not in spec]
     if problems:
         raise CommandError('start: ' + '; '.join(problems))
