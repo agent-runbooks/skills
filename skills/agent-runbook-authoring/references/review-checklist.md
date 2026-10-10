@@ -23,7 +23,7 @@ flow.py:
 - The `over` file of every `foreach` is written by an earlier step whose prompt states its format: a JSON array of objects with a unique `key`, an empty array when there is nothing.
 - A step with side effects has `side_effects`, applies a file, and takes no judgement calls.
 - Every launch-message value a prompt expects is in the step's `inputs` or a keyword argument of every call of it.
-- Every `end(...)` status is under End of run in `SKILL.md`, and `failed` is there. An end report names a file written inside a group through the result's `files`, since `<run>/<name>` does not reach into a group.
+- Every `end(...)` status is under End of run in `SKILL.md`, and `failed` is there. An end report names a file written inside a group through `files(<result>)`, since `<run>/<name>` does not reach into a group.
 
 Prompts:
 
@@ -32,7 +32,7 @@ Prompts:
 - A prompt that runs commands says where their exit codes and failing output go, and what counts as skipped.
 - An output file another step parses has its format stated: headings, fields, what to write when there is nothing.
 - `common.md` says what "the changes" are and how the checks are run.
-- The copied sections match this skill's references word for word, and `runbook.py` is this skill's `runbook.py`. With the engine from PyPI instead, `flow.py` declares `agent-runbooks` as `template.md` shows, and the Execution rules differ only in `uv run` for `python3`.
+- The copied sections match this skill's references word for word, and `agent_runbooks.py` is this skill's `agent_runbooks.py`. With the engine from PyPI instead, `flow.py` declares `agent-runbooks` as `template.md` shows, no `agent_runbooks.py` sits next to `flow.py`, and the Execution rules differ only in `uv run` for `python3`.
 
 SKILL.md:
 

@@ -5,6 +5,7 @@ Run folders of engine 2.x that `skills/runbook-viewer/test_view.py` reads. They 
 - `20261007-slugify-max-length`: `runbook-review-loop` to `ready`; `fix` interrupted and launched again as `fix@2`, the human grants one more round
 - `20261007-slugify-transliterate-question`: `runbook-review-loop` waiting for the human after its fix round, with one reply corrected on the way
 - `20261007-migrate-sites-running`: `runbook-migrate-sites/flow.py`, kept here; a foreach failed by one item, with a question withdrawn and an item cancelled, then a parallel in flight with a blocked branch step called again
+- `20261007-port-modules-running`: `runbook-port-modules/flow.py`, kept here; a foreach whose items each run a parallel: one item done, one with a branch step interrupted and launched again, one in its first step, one not started
 
 To make them again, after a change in the engine or in a flow:
 

@@ -16,9 +16,9 @@ Runbook `runbook-migrate-sites`. State in `state.json`. Inputs:
 - main/sites[auth]/migrate: {"status": "done", "risky": false}
 - main/sites[auth]/verify: launched
 - main/sites[auth]/verify: {"status": "failed", "reason": "users.email loses its NOT NULL constraint"}
-- main/sites[billing]/approve: cancelled
 - main/reviews/a: launched
 - main/reviews/b/review: launched
+- main/sites[billing]/approve: cancelled
 - main/reviews/a: {"status": "done", "findings": 1}
 - main/reviews/b/review: {"status": "blocked", "reason": "no second reviewer is set up"}
 - main/reviews/b/review#2: launched

@@ -6,13 +6,13 @@ A runbook is a skill directory:
 runbook-<name>/
   SKILL.md          the procedure for the orchestrator: inputs, rules, executors, end of run
   flow.py           inputs, executors, steps and the flow in Python, and the command the orchestrator runs
-  runbook.py        the engine behind flow.py, copied from this skill
+  agent_runbooks.py the engine behind flow.py, copied from this skill
   prompts/
     common.md       what every executor reads first: project preamble, executor constraints
     <nn>-<step>.md  one file per step: the task, the deliverable, what the reply's fields mean
 ```
 
-Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`runbook.py`](runbook.py) into the runbook directory. An author with several runbooks can take the engine from PyPI instead of copying it, see [The engine from PyPI](#the-engine-from-pypi). `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
+Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`agent_runbooks.py`](agent_runbooks.py) into the runbook directory. An author with several runbooks can take the engine from PyPI instead of copying it, see [The engine from PyPI](#the-engine-from-pypi). `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
 
 Three placeholders are never filled by the author. `<repo>` is the repository the steps work in: the directory the runbook is invoked in, or an input when the code lives elsewhere, in a worktree for instance. It is always among the run's inputs. `<run>` is the run directory. `<skill>` is the directory this `SKILL.md` was loaded from. In prompts, repository files are `<repo>/…`, input files are `<run>/…`, and step outputs are named without a path, `checks.md`: the launch message gives each its numbered path.
 
@@ -140,9 +140,9 @@ The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine w
 
 ## The engine from PyPI
 
-From 1.4.4 each release of `runbook.py` is also on PyPI as `agent-runbooks`, imported as `agent_runbooks`. A runbook can declare the release it needs instead of carrying a copy, and [uv](https://docs.astral.sh/uv/) downloads it once for every runbook that declares it. Such a runbook runs only where uv is installed; one with the copy needs only `python3`. Three things change:
+From 1.4.4 each release of the engine is also on PyPI as `agent-runbooks`. From 2.0.0 the copy and the package are the same file, `agent_runbooks.py`, so `flow.py` imports the engine with the same line either way: `from agent_runbooks import ...`. A runbook can declare the release it needs instead of carrying a copy, and [uv](https://docs.astral.sh/uv/) downloads it once for every runbook that declares it. Such a runbook runs only where uv is installed; one with the copy needs only `python3`. Three things change:
 
-- The runbook directory has no `runbook.py`. `flow.py` declares the engine under its shebang and imports it by the package's name. The steps and the generator under `@rb.flow` are written as [`flow-language.md`](flow-language.md) shows:
+- The runbook directory has no `agent_runbooks.py`, and `flow.py` declares the engine in a block under its shebang. The rest of `flow.py` stays as it is. Delete the copy when moving to PyPI: Python puts the script's directory first on its import path, so an `agent_runbooks.py` left next to `flow.py` is the engine that runs, and the pin is silently ignored.
 
   ```python
   #!/usr/bin/env python3
@@ -177,8 +177,8 @@ From 1.4.4 each release of `runbook.py` is also on PyPI as `agent-runbooks`, imp
 - A step with side effects applies a file a former step wrote and takes no judgement calls. If it needs judgement, split it.
 - Only one step at a time changes the working tree, and nothing reads the tree while it changes. Parallel readers are fine. A foreach whose body changes the tree takes `max_concurrent=1`.
 - Every pass writes a new numbered file, so nothing is overwritten. A step that needs its previous pass lists its own output in `reads`. In a group, `reads` do not reach an earlier group's files, so the flow passes the previous pass in: `review(previous=reviews.a)`. The step tells a first pass from a later one by that file being absent, never by a counter it is not given.
-- A prompt shared by two launches is one step called twice, its differences passed as keyword arguments of the call: `review(executor='other')`, `review(focus='tests')`. Each launch writes its own numbered file, and a step after them gets both through the result that holds them, `yield triage(reviews=reviews)`.
+- A prompt shared by two launches is one step called twice, its differences passed as keyword arguments of the call: `review(executor=other)`, `review(focus='tests')`. Each launch writes its own numbered file, and a step after them gets both through the result that holds them, `yield triage(reviews=reviews)`.
 - A step that earlier replies can make pointless is not called: an `if` in the flow goes past it, and the prompts of the steps after it say what to do when its file is absent. Not calling it is cheaper than launching an executor to report that there is nothing to do.
 - Step names are the names of their outputs where possible: step `checks` writes `checks.md`. The run directory then reads as the run: `00-preflight.md`, `01-implement.md`, `02-checks.md`, `03-fix-checks.md`, `04-checks.md`.
-- Keep step names unique across executor and human steps, and step names, group names and branch keys to letters, digits, `_ . -`. Collection parameters take lists, tuples or other iterables, never a lone string. `rb.human(writes=...)` takes one file name.
+- Keep step names unique across executor and human steps, and step names, executor names, group names and branch keys to letters, digits, `_ . -`. Collection parameters take lists, tuples or other iterables, never a lone string. `rb.human(writes=...)` takes one file name.
 - A smoke input that takes the shortest path proves the launch, not the flow. Add a second one that reaches the loops and the human steps before the runbook is trusted with real work.

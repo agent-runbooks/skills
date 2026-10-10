@@ -125,6 +125,20 @@ nav {
 .row:focus-visible { outline-offset: -2px; }
 .row .exec { color: var(--muted); }
 .row .dur { text-align: right; font-variant-numeric: tabular-nums; }
+.row .step { color: var(--muted); }
+/* Rows and group headers are indented one level per group around them. */
+.row > .name, .group-head > span:last-child { padding-left: calc(10px + var(--depth, 0) * 16px); }
+.group-head { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; font-size: 12px; color: var(--muted); }
+.group-head > span:last-child {
+  grid-column: 2 / -1;
+  padding-top: 7px;
+  padding-bottom: 2px;
+  padding-right: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mark-not_started, .row.not_started > span { color: var(--muted); }
 .mark-done { color: var(--done); }
 .mark-running { color: var(--running); }
 .mark-waiting { color: var(--waiting); font-weight: 700; }
@@ -172,6 +186,9 @@ nav {
 .doc { border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 18px; }
 .doc:first-of-type { margin-top: 0; }
 .doc-name { font: 12px var(--mono); color: var(--muted); margin-bottom: 6px; }
+.block + .block { border-top: 2px solid var(--rule); margin-top: 28px; padding-top: 4px; }
+.block-head { font: 600 14px var(--mono); margin: 10px 0 8px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.block-head .meta { font-weight: 400; color: var(--muted); font-size: 12px; }
 
 .md { max-width: 80ch; overflow-wrap: break-word; }
 .md h1, .md h2, .md h3, .md h4 { line-height: 1.25; margin: 1.2em 0 .4em; }
@@ -219,7 +236,7 @@ pre {
 </header>
 <main>
   <nav>
-    <div class="nav-head"><span class="label">Calls</span><button id="follow" type="button" aria-pressed="true">following</button></div>
+    <div class="nav-head"><span class="label">Steps</span><button id="follow" type="button" aria-pressed="true">following</button></div>
     <div class="rows" id="calls"></div>
     <div class="files"><span class="label">Run files</span><div id="run-files"></div></div>
   </nav>

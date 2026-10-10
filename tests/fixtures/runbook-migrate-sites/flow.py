@@ -3,19 +3,19 @@
 
 import contextlib
 
-from runbook import Runbook, StepFailed, end, foreach, parallel
+from agent_runbooks import Runbook, StepFailed, end, foreach, parallel
 
 rb = Runbook()
 
 rb.inputs(brief=str, repo=str)
 
 SUBAGENT = 'general-purpose, on the model of the main session'
-rb.executor('coder', SUBAGENT)
-rb.executor('reviewer', SUBAGENT)
+coder = rb.executor('coder', SUBAGENT)
+reviewer = rb.executor('reviewer', SUBAGENT)
 
 plan = rb.step(
     'plan',
-    executor='coder',
+    executor=coder,
     prompt='prompts/01-plan.md',
     reads=['brief.md', 'working tree'],
     writes=['sites.json'],
@@ -23,7 +23,7 @@ plan = rb.step(
 
 migrate = rb.step(
     'migrate',
-    executor='coder',
+    executor=coder,
     prompt='prompts/02-migrate.md',
     reads=['brief.md', 'working tree'],
     writes=['migrate.md'],
@@ -39,7 +39,7 @@ approve = rb.human(
 
 verify = rb.step(
     'verify',
-    executor='reviewer',
+    executor=reviewer,
     prompt='prompts/03-verify.md',
     reads=['migrate.md', 'working tree'],
     writes=['verify.md'],
@@ -47,7 +47,7 @@ verify = rb.step(
 
 review = rb.step(
     'review',
-    executor='reviewer',
+    executor=reviewer,
     prompt='prompts/04-review.md',
     reads=['brief.md', 'sites.index', 'working tree'],
     writes=['review.md'],
@@ -69,7 +69,7 @@ def second_review(ctx):
     try:
         return (yield review())
     except StepFailed:
-        return (yield review(executor='coder'))
+        return (yield review(executor=coder))
 
 
 @rb.flow

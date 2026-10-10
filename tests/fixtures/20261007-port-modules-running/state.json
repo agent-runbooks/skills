@@ -1,0 +1,638 @@
+{
+  "format": 2,
+  "runbook": "runbook-port-modules",
+  "status": "running",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo"
+  },
+  "calls": [
+    {
+      "id": "main/plan",
+      "attempt": 1,
+      "kind": "step",
+      "step": "plan",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/brief.md"
+      },
+      "files": {
+        "modules.json": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/00-modules.json"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "modules.json": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/00-modules.json"
+      },
+      "started_at": "2026-10-07T16:00:00Z",
+      "ended_at": "2026-10-07T16:01:00Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules",
+      "attempt": 1,
+      "kind": "foreach",
+      "step": "modules",
+      "status": "running",
+      "over": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/00-modules.json",
+      "items": [
+        {
+          "key": "core",
+          "path": "src/core"
+        },
+        {
+          "key": "cli",
+          "path": "src/cli"
+        },
+        {
+          "key": "web",
+          "path": "src/web"
+        },
+        {
+          "key": "docs",
+          "path": "docs"
+        }
+      ],
+      "index": null,
+      "problem": null,
+      "started_at": "2026-10-07T16:01:00Z",
+      "ended_at": null
+    },
+    {
+      "id": "main/modules[core]",
+      "attempt": 1,
+      "kind": "item",
+      "step": "modules",
+      "status": "running",
+      "fields": {
+        "key": "core",
+        "path": "src/core"
+      },
+      "reply": null,
+      "reason": null,
+      "files": {},
+      "started_at": "2026-10-07T16:01:00Z",
+      "ended_at": null
+    },
+    {
+      "id": "main/modules[cli]",
+      "attempt": 1,
+      "kind": "item",
+      "step": "modules",
+      "status": "done",
+      "fields": {
+        "key": "cli",
+        "path": "src/cli"
+      },
+      "reply": {
+        "warnings": 2,
+        "passed": true
+      },
+      "reason": null,
+      "files": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/05-port.md",
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/11-test.md"
+      },
+      "started_at": "2026-10-07T16:01:00Z",
+      "ended_at": "2026-10-07T16:07:20Z"
+    },
+    {
+      "id": "main/modules[core]/port",
+      "attempt": 1,
+      "kind": "step",
+      "step": "port",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/brief.md"
+      },
+      "files": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/04-port.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/04-port.md"
+      },
+      "started_at": "2026-10-07T16:01:00Z",
+      "ended_at": "2026-10-07T16:03:00Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[cli]/port",
+      "attempt": 1,
+      "kind": "step",
+      "step": "port",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/brief.md"
+      },
+      "files": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/05-port.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/05-port.md"
+      },
+      "started_at": "2026-10-07T16:01:00Z",
+      "ended_at": "2026-10-07T16:04:30Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[core]/checks",
+      "attempt": 1,
+      "kind": "parallel",
+      "step": "checks",
+      "status": "running",
+      "branches": null,
+      "started_at": "2026-10-07T16:03:00Z",
+      "ended_at": null
+    },
+    {
+      "id": "main/modules[core]/checks/lint",
+      "attempt": 1,
+      "kind": "step",
+      "step": "lint",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "warnings": 0
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "started_at": "2026-10-07T16:03:00Z",
+      "ended_at": "2026-10-07T16:03:30Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[core]/checks/tests/test",
+      "attempt": 1,
+      "kind": "step",
+      "step": "test",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "passed": false
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/08-test.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/08-test.md"
+      },
+      "started_at": "2026-10-07T16:03:00Z",
+      "ended_at": "2026-10-07T16:05:10Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[cli]/checks",
+      "attempt": 1,
+      "kind": "parallel",
+      "step": "checks",
+      "status": "done",
+      "branches": {
+        "lint": "done",
+        "tests": "done"
+      },
+      "started_at": "2026-10-07T16:04:30Z",
+      "ended_at": "2026-10-07T16:07:20Z"
+    },
+    {
+      "id": "main/modules[cli]/checks/lint",
+      "attempt": 1,
+      "kind": "step",
+      "step": "lint",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "warnings": 2
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "started_at": "2026-10-07T16:04:30Z",
+      "ended_at": "2026-10-07T16:05:30Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[cli]/checks/tests/test",
+      "attempt": 1,
+      "kind": "step",
+      "step": "test",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "passed": true
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/11-test.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/11-test.md"
+      },
+      "started_at": "2026-10-07T16:04:30Z",
+      "ended_at": "2026-10-07T16:07:20Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[core]/checks/tests/fix",
+      "attempt": 1,
+      "kind": "step",
+      "step": "fix",
+      "status": "interrupted",
+      "executor": "coder",
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/08-test.md"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/12-fix.md"
+      },
+      "started_at": "2026-10-07T16:05:10Z",
+      "ended_at": "2026-10-07T16:06:20Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[core]/checks/tests/fix",
+      "attempt": 2,
+      "kind": "step",
+      "step": "fix",
+      "status": "running",
+      "executor": "coder",
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "test.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/08-test.md"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/13-fix.md"
+      },
+      "started_at": "2026-10-07T16:06:20Z",
+      "ended_at": null,
+      "invalid_replies": []
+    },
+    {
+      "id": "main/modules[web]",
+      "attempt": 1,
+      "kind": "item",
+      "step": "modules",
+      "status": "running",
+      "fields": {
+        "key": "web",
+        "path": "src/web"
+      },
+      "reply": null,
+      "reason": null,
+      "files": {},
+      "started_at": "2026-10-07T16:07:20Z",
+      "ended_at": null
+    },
+    {
+      "id": "main/modules[web]/port",
+      "attempt": 1,
+      "kind": "step",
+      "step": "port",
+      "status": "running",
+      "executor": "coder",
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/brief.md"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "port.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-port-modules-running/15-port.md"
+      },
+      "started_at": "2026-10-07T16:07:20Z",
+      "ended_at": null,
+      "invalid_replies": []
+    }
+  ]
+}

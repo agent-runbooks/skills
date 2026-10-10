@@ -1,6 +1,6 @@
 # Files of a run
 
-`runbook.py` keeps two files in the run directory. The orchestrator opens neither. It also writes `schemas/<NN>-<step>.json`, the JSON Schema of each launch's reply, and `<NN>-<name>.index.json`, the index of each foreach that ended. Next to them are the input files and the steps' outputs, `<NN>-<name>`, numbered by the record that wrote them.
+`agent_runbooks.py` keeps two files in the run directory. The orchestrator opens neither. It also writes `schemas/<NN>-<step>.json`, the JSON Schema of each launch's reply, and `<NN>-<name>.index.json`, the index of each foreach that ended. Next to them are the input files and the steps' outputs, `<NN>-<name>`, numbered by the record that wrote them.
 
 ## state.json
 

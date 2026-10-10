@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerates the run folders test_view.py reads: python3 tests/fixtures/make.py, from anywhere.
 
-Each run is driven through runbook.py's commands, the engine in skills/agent-runbook-authoring/references, with
+Each run is driven through agent_runbooks.py's commands, the engine in skills/agent-runbook-authoring/references, with
 fake executors: a reply is passed as an orchestrator would pass it, after writing the files its launch names. The
 runs are made under /tmp/rb-demo/.agent-runbooks/runs, so the paths recorded in them do not depend on the machine,
 then moved here, and the directories left empty removed. The engine's clock is fixed, so the times, and the
@@ -26,10 +26,11 @@ REPO = '/tmp/rb-demo'
 RUNS = os.path.join(REPO, '.agent-runbooks', 'runs')
 
 sys.path.insert(0, ROOT)
-import runbook  # noqa: E402
+import agent_runbooks  # noqa: E402
 
 REVIEW_LOOP = os.path.join(ROOT, 'runbook-review-loop', 'flow.py')
 MIGRATE_SITES = os.path.join(HERE, 'runbook-migrate-sites', 'flow.py')
+PORT_MODULES = os.path.join(HERE, 'runbook-port-modules', 'flow.py')
 
 
 class Run:
@@ -62,7 +63,7 @@ class Run:
         return self
 
     def command(self, *args: str) -> None:
-        runbook.utc_now = lambda: self.clock.strftime('%Y-%m-%dT%H:%M:%SZ')
+        agent_runbooks.utc_now = lambda: self.clock.strftime('%Y-%m-%dT%H:%M:%SZ')
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             code = self.rb.main([self.flow, self.dir, *args])
@@ -214,9 +215,49 @@ def groups() -> None:
     run.keep()
 
 
+def nested() -> None:
+    """A foreach whose items each run a parallel: one item done, one with a branch step interrupted and launched
+    again, one porting, one not started."""
+    modules = [
+        {'key': 'core', 'path': 'src/core'},
+        {'key': 'cli', 'path': 'src/cli'},
+        {'key': 'web', 'path': 'src/web'},
+        {'key': 'docs', 'path': 'docs'},
+    ]
+    run = Run(
+        PORT_MODULES,
+        '20261007-port-modules-running',
+        '2026-10-07T16:00:00Z',
+        {'brief': 'brief.md', 'repo': REPO},
+        {'brief.md': '# Port modules\n\nPort every module to the new API.\n'},
+    )
+    run.after(1, 0).reply('main/plan', {'status': 'done'}, {'modules.json': json.dumps(modules, indent=2) + '\n'})
+    run.after(2, 0).reply(
+        'main/modules[core]/port', {'status': 'done'}, {'port.md': '# Port core\n\n`core.api` takes the new client.\n'}
+    )
+    run.after(0, 30).reply('main/modules[core]/checks/lint', {'status': 'done', 'warnings': 0})
+    run.after(1, 0).reply(
+        'main/modules[cli]/port', {'status': 'done'}, {'port.md': '# Port cli\n\nThe commands call `core.api`.\n'}
+    )
+    run.after(0, 40).reply(
+        'main/modules[core]/checks/tests/test',
+        {'status': 'done', 'passed': False},
+        {'test.md': '# Test core\n\n`test_retry` fails: the new client does not retry on 503.\n'},
+    )
+    run.after(0, 20).reply('main/modules[cli]/checks/lint', {'status': 'done', 'warnings': 2})
+    run.after(0, 50).command('interrupted', 'main/modules[core]/checks/tests/fix')
+    run.after(1, 0).reply(
+        'main/modules[cli]/checks/tests/test',
+        {'status': 'done', 'passed': True},
+        {'test.md': '# Test cli\n\nAll tests pass.\n'},
+    )
+    run.keep()
+
+
 if __name__ == '__main__':
     os.makedirs(RUNS, exist_ok=True)
     ready()
     question()
     groups()
+    nested()
     os.removedirs(RUNS)

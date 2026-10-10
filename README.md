@@ -6,14 +6,16 @@ A **runbook** lets you give an agent session a procedure to run step by step thr
 
 ## How it works
 
-The steps are prompt files. The flow lives in `flow.py`: the steps declared, and one Python generator that calls them, a few dozen lines on a small engine copied into every runbook, so a finished runbook runs where nothing from this repository is installed. The orchestrating session launches what `flow.py` prints, waits, and hands each executor's JSON reply back to it; it never reasons about what comes next. Steps pass work to each other through files in a run directory, so the orchestrator's context stays small, and an interrupted run resumes from `state.json`.
+The steps are prompt files. The flow is `flow.py`: it declares the steps and calls them from one Python generator, usually a few dozen lines. A copy of the small engine sits next to it, so a finished runbook runs where nothing from this repository is installed.
+
+The orchestrating session launches what `flow.py` prints, waits for the step to finish, and passes the executor's JSON reply back to `flow.py`. It never decides what comes next. Steps hand work to each other through files in a run directory, which keeps the orchestrator's context small. An interrupted run resumes from `state.json`.
 
 One step, and the flow that calls it:
 
 ```python
 review = rb.step(
     'review',
-    executor='reviewer',
+    executor=reviewer,
     prompt='prompts/02-review.md',
     reads=['implement.md', 'fix.md'],
     writes=['review.md'],
@@ -26,7 +28,7 @@ def main(ctx):
     yield implement()
     rounds = 0
     while True:
-        reviews = yield parallel('reviews', a=review(), b=review(executor='other'))
+        reviews = yield parallel('reviews', a=review(), b=review(executor=other))
         if reviews.a.findings + reviews.b.findings == 0:
             return end('ready', 'read <run>/implement.md')
         if rounds >= ctx.inputs.maxFixRounds:

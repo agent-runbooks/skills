@@ -1,8 +1,9 @@
-"""Tests of runbook.py: run with `python3 -m unittest test_runbook -v` from this directory."""
+"""Tests of agent_runbooks.py: run with `python3 -m unittest test_runbook -v` from this directory."""
 
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -16,8 +17,8 @@ from collections.abc import Callable
 from typing import Any
 from unittest import mock
 
-import runbook
-from runbook import Runbook, StepFailed, end, foreach, parallel
+import agent_runbooks
+from agent_runbooks import Executor, Runbook, StepFailed, address, end, files, foreach, parallel
 
 
 class RunbookTestCase(unittest.TestCase):
@@ -41,7 +42,7 @@ class RunbookTestCase(unittest.TestCase):
         self.addCleanup(environ.stop)
         os.environ.pop('UV', None)
         self.minute = 0
-        clock = mock.patch.object(runbook, 'utc_now', self.tick)
+        clock = mock.patch.object(agent_runbooks, 'utc_now', self.tick)
         clock.start()
         self.addCleanup(clock.stop)
 
@@ -55,7 +56,7 @@ class RunbookTestCase(unittest.TestCase):
         with mock.patch.object(sys, 'argv', [os.path.join(self.here, 'flow.py')]):
             rb = Runbook()
         rb.inputs(repo=str, **inputs)
-        rb.executor('main', 'Main model')
+        rb.executor('strong', 'Strong model')
         rb.executor('light', 'Light model')
         declare(rb)
         return rb
@@ -151,9 +152,15 @@ class RunbookTestCase(unittest.TestCase):
             json.dump(value, f)
 
 
+def executors(rb: Runbook) -> tuple[Executor, Executor]:
+    """The executors RunbookTestCase.runbook declares."""
+    return rb.executors['strong'], rb.executors['light']
+
+
 def linear(rb: Runbook) -> None:
-    first = rb.step('first', executor='light', prompt='prompts/a.md')
-    second = rb.step('second', executor='main', prompt='prompts/b.md', writes=['b.md'])
+    strong, light = executors(rb)
+    first = rb.step('first', executor=light, prompt='prompts/a.md')
+    second = rb.step('second', executor=strong, prompt='prompts/b.md', writes=['b.md'])
 
     @rb.flow
     def main(ctx):
@@ -164,18 +171,19 @@ def linear(rb: Runbook) -> None:
 
 def review_loop(rb: Runbook) -> None:
     """The flow of runbook-review-loop."""
+    strong, light = executors(rb)
     implement = rb.step(
-        'implement', executor='main', prompt='prompts/a.md', reads=['brief.md', 'working tree'], writes=['implement.md']
+        'implement', executor=strong, prompt='prompts/a.md', reads=['brief.md', 'working tree'], writes=['implement.md']
     )
     review = rb.step(
         'review',
-        executor='light',
+        executor=light,
         prompt='prompts/b.md',
         reads=['brief.md', 'implement.md', 'fix.md', 'review.md', 'working tree'],
         writes=['review.md'],
         reply={'findings': int},
     )
-    fix = rb.step('fix', executor='main', prompt='prompts/c.md', reads=['review.md', 'rounds.md'], writes=['fix.md'])
+    fix = rb.step('fix', executor=strong, prompt='prompts/c.md', reads=['review.md', 'rounds.md'], writes=['fix.md'])
     ask_rounds = rb.human(
         'ask-rounds',
         writes='rounds.md',
@@ -267,15 +275,16 @@ class ReviewLoopTest(RunbookTestCase):
 
 def task_cycle(rb: Runbook) -> None:
     """A task cycle like runbook-implement-task's: preflight, implement, two reviews, triage, fix rounds, polish."""
+    strong, light = executors(rb)
     preflight = rb.step(
-        'preflight', executor='light', prompt='prompts/a.md', writes=['preflight.md'], reply={'clean': bool}
+        'preflight', executor=light, prompt='prompts/a.md', writes=['preflight.md'], reply={'clean': bool}
     )
     implement = rb.step(
-        'implement', executor='main', prompt='prompts/b.md', reads=['brief.md'], writes=['implement.md']
+        'implement', executor=strong, prompt='prompts/b.md', reads=['brief.md'], writes=['implement.md']
     )
     review_a = rb.step(
         'review-a',
-        executor='main',
+        executor=strong,
         prompt='prompts/c.md',
         reads=['implement.md'],
         writes=['review-a.md'],
@@ -283,25 +292,25 @@ def task_cycle(rb: Runbook) -> None:
     )
     review_b = rb.step(
         'review-b',
-        executor='light',
+        executor=light,
         prompt='prompts/c.md',
         reads=['implement.md'],
         writes=['review-b.md'],
         reply={'findings': int},
     )
-    triage = rb.step('triage', executor='main', prompt='prompts/d.md', writes=['triage.md'], reply={'to_fix': int})
+    triage = rb.step('triage', executor=strong, prompt='prompts/d.md', writes=['triage.md'], reply={'to_fix': int})
     fix = rb.step(
-        'fix', executor='main', prompt='prompts/b.md', reads=['triage.md', 'verify.md', 'rounds.md'], writes=['fix.md']
+        'fix', executor=strong, prompt='prompts/b.md', reads=['triage.md', 'verify.md', 'rounds.md'], writes=['fix.md']
     )
     verify = rb.step(
         'verify',
-        executor='main',
+        executor=strong,
         prompt='prompts/c.md',
         reads=['fix.md'],
         writes=['verify.md'],
         reply={'unresolved': int},
     )
-    polish = rb.step('polish', executor='main', prompt='prompts/d.md', writes=['polish.md'], reply={'passed': bool})
+    polish = rb.step('polish', executor=strong, prompt='prompts/d.md', writes=['polish.md'], reply={'passed': bool})
     ask_rounds = rb.human(
         'ask-rounds',
         writes='rounds.md',
@@ -411,10 +420,11 @@ class TaskCycleTest(RunbookTestCase):
 
 class ParallelTest(RunbookTestCase):
     def declare(self, rb: Runbook) -> None:
-        implement = rb.step('implement', executor='main', prompt='prompts/a.md', writes=['implement.md'])
+        strong, light = executors(rb)
+        implement = rb.step('implement', executor=strong, prompt='prompts/a.md', writes=['implement.md'])
         review_a = rb.step(
             'review-a',
-            executor='main',
+            executor=strong,
             prompt='prompts/b.md',
             reads=['implement.md'],
             writes=['review-a.md'],
@@ -422,21 +432,21 @@ class ParallelTest(RunbookTestCase):
         )
         review_b = rb.step(
             'review-b',
-            executor='light',
+            executor=light,
             prompt='prompts/b.md',
             reads=['implement.md'],
             writes=['review-b.md'],
             reply={'findings': int},
         )
-        lint = rb.step('lint', executor='light', prompt='prompts/c.md', writes=['lint.md'], reply={'ok': bool})
+        lint = rb.step('lint', executor=light, prompt='prompts/c.md', writes=['lint.md'], reply={'ok': bool})
         triage = rb.step(
             'triage',
-            executor='main',
+            executor=strong,
             prompt='prompts/d.md',
             reads=['implement.md', 'review-a.md'],
             writes=['triage.md'],
         )
-        commit = rb.step('commit', executor='main', prompt='prompts/a.md', side_effects='pushes a commit')
+        commit = rb.step('commit', executor=strong, prompt='prompts/a.md', side_effects='pushes a commit')
 
         def chain(ctx):
             r = yield review_b()
@@ -493,7 +503,7 @@ class ParallelTest(RunbookTestCase):
         out = self.reply(rb, 'main/triage')
         self.assertEqual(
             self.first_line(out),
-            'launch step `main/commit` as a new subagent, executor `main`: Main model. Side effects: pushes a commit',
+            'launch step `main/commit` as a new subagent, executor `strong`: Strong model. Side effects: pushes a commit',
         )
         out = self.fail_step(rb, 'main/commit', 'push rejected')
         self.assertEqual(
@@ -515,10 +525,11 @@ class ParallelTest(RunbookTestCase):
 
     def test_a_failed_branch_waits_for_a_running_sibling_and_launches_nothing_new(self) -> None:
         def declare(rb: Runbook) -> None:
-            a = rb.step('a', executor='main', prompt='prompts/a.md')
-            b1 = rb.step('b1', executor='main', prompt='prompts/b.md')
-            b2 = rb.step('b2', executor='main', prompt='prompts/c.md')
-            after = rb.step('after', executor='main', prompt='prompts/d.md')
+            strong, _ = executors(rb)
+            a = rb.step('a', executor=strong, prompt='prompts/a.md')
+            b1 = rb.step('b1', executor=strong, prompt='prompts/b.md')
+            b2 = rb.step('b2', executor=strong, prompt='prompts/c.md')
+            after = rb.step('after', executor=strong, prompt='prompts/d.md')
             ask = rb.human('ask', question='Anything?')
 
             def chain(ctx):
@@ -564,8 +575,9 @@ class ParallelTest(RunbookTestCase):
 
     def test_a_group_that_fails_once_driven_launches_and_asks_nothing_beside_it(self) -> None:
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
-            push = rb.step('push', executor='main', prompt='prompts/b.md', side_effects='pushes')
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
+            push = rb.step('push', executor=strong, prompt='prompts/b.md', side_effects='pushes')
             ask = rb.human('ask', question='ok?')
 
             def missing_over(ctx):
@@ -602,8 +614,9 @@ class ParallelTest(RunbookTestCase):
 
     def test_an_unhandled_failure_in_a_branch_fails_the_run(self) -> None:
         def declare(rb: Runbook) -> None:
-            a = rb.step('a', executor='main', prompt='prompts/a.md')
-            b = rb.step('b', executor='main', prompt='prompts/b.md')
+            strong, _ = executors(rb)
+            a = rb.step('a', executor=strong, prompt='prompts/a.md')
+            b = rb.step('b', executor=strong, prompt='prompts/b.md')
 
             @rb.flow
             def main(ctx):
@@ -622,9 +635,10 @@ class ParallelTest(RunbookTestCase):
 
     def test_a_human_step_in_a_branch_takes_free_text_and_names_the_branch_s_own_files(self) -> None:
         def declare(rb: Runbook) -> None:
-            draft = rb.step('draft', executor='main', prompt='prompts/a.md', writes=['note.md'])
+            strong, _ = executors(rb)
+            draft = rb.step('draft', executor=strong, prompt='prompts/a.md', writes=['note.md'])
             ask = rb.human('ask', writes='words.md', question='Is `<run>/note.md` fine?')
-            summary = rb.step('summary', executor='main', prompt='prompts/b.md', reads=['note.md', 'words.md'])
+            summary = rb.step('summary', executor=strong, prompt='prompts/b.md', reads=['note.md', 'words.md'])
 
             def branch(ctx):
                 yield draft()
@@ -667,18 +681,19 @@ class ParallelTest(RunbookTestCase):
 # ---------- foreach ----------
 
 
-def sites(rb: Runbook, on_item_failure: runbook.OnItemFailure = 'fail', max_concurrent: int = 2) -> None:
-    plan = rb.step('plan', executor='light', prompt='prompts/a.md', writes=['sites.json'])
+def sites(rb: Runbook, on_item_failure: agent_runbooks.OnItemFailure = 'fail', max_concurrent: int = 2) -> None:
+    strong, light = executors(rb)
+    plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['sites.json'])
     migrate = rb.step(
         'migrate',
-        executor='main',
+        executor=strong,
         prompt='prompts/b.md',
         reads=['plan.md'],
         writes=['migrated.md'],
         reply={'changed': int},
     )
-    verify = rb.step('verify', executor='light', prompt='prompts/c.md', reads=['migrated.md'], writes=['verify.md'])
-    summary = rb.step('summary', executor='main', prompt='prompts/d.md', reads=['sites.index'])
+    verify = rb.step('verify', executor=light, prompt='prompts/c.md', reads=['migrated.md'], writes=['verify.md'])
+    summary = rb.step('summary', executor=strong, prompt='prompts/d.md', reads=['sites.index'])
 
     def body(ctx, item):
         m = yield migrate()
@@ -739,11 +754,12 @@ class ForeachTest(RunbookTestCase):
 
     def test_item_results_pass_their_fields_and_files(self) -> None:
         def declare(rb: Runbook) -> None:
-            plan = rb.step('plan', executor='light', prompt='prompts/a.md', writes=['sites.json'])
+            strong, light = executors(rb)
+            plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['sites.json'])
             migrate = rb.step(
-                'migrate', executor='main', prompt='prompts/b.md', writes=['migrated.md'], reply={'changed': int}
+                'migrate', executor=strong, prompt='prompts/b.md', writes=['migrated.md'], reply={'changed': int}
             )
-            summary = rb.step('summary', executor='main', prompt='prompts/d.md')
+            summary = rb.step('summary', executor=strong, prompt='prompts/d.md')
 
             @rb.flow
             def main(ctx):
@@ -810,7 +826,8 @@ class ForeachTest(RunbookTestCase):
             with self.subTest(case=case):
 
                 def declare(rb: Runbook) -> None:
-                    work = rb.step('work', executor='main', prompt='prompts/a.md')
+                    strong, _ = executors(rb)
+                    work = rb.step('work', executor=strong, prompt='prompts/a.md')
 
                     @rb.flow
                     def main(ctx):
@@ -833,8 +850,9 @@ class ForeachTest(RunbookTestCase):
 
     def test_an_over_file_no_step_wrote_yet_is_absent(self) -> None:
         def declare(rb: Runbook) -> None:
-            rb.step('plan', executor='light', prompt='prompts/a.md', writes=['sites.json'])
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
+            strong, light = executors(rb)
+            rb.step('plan', executor=light, prompt='prompts/a.md', writes=['sites.json'])
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
 
             @rb.flow
             def main(ctx):
@@ -848,7 +866,8 @@ class ForeachTest(RunbookTestCase):
 
     def test_a_loop_reaches_the_foreach_twice_and_a_body_of_one_call_replies_for_the_item(self) -> None:
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md', writes=['work.md'], reply={'n': int})
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md', writes=['work.md'], reply={'n': int})
 
             @rb.flow
             def main(ctx):
@@ -875,9 +894,10 @@ class ForeachTest(RunbookTestCase):
 
     def test_a_parallel_and_a_foreach_nest_inside_an_item(self) -> None:
         def declare(rb: Runbook) -> None:
-            check_x = rb.step('check-x', executor='main', prompt='prompts/a.md', writes=['x.md'], reply={'ok': bool})
-            check_y = rb.step('check-y', executor='light', prompt='prompts/b.md', writes=['y.md'])
-            page = rb.step('page', executor='light', prompt='prompts/c.md', reads=['x.md'], writes=['page.md'])
+            strong, light = executors(rb)
+            check_x = rb.step('check-x', executor=strong, prompt='prompts/a.md', writes=['x.md'], reply={'ok': bool})
+            check_y = rb.step('check-y', executor=light, prompt='prompts/b.md', writes=['y.md'])
+            page = rb.step('page', executor=light, prompt='prompts/c.md', reads=['x.md'], writes=['page.md'])
 
             def body(ctx, item):
                 checks = yield parallel('checks', x=check_x(), y=check_y())
@@ -919,8 +939,9 @@ class ForeachTest(RunbookTestCase):
 
     def test_an_item_whose_nested_group_fails_once_driven_leaves_the_other_items_unlaunched(self) -> None:
         def declare(rb: Runbook) -> None:
-            plan = rb.step('plan', executor='light', prompt='prompts/a.md', writes=['items.json'])
-            work = rb.step('work', executor='main', prompt='prompts/b.md')
+            strong, light = executors(rb)
+            plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['items.json'])
+            work = rb.step('work', executor=strong, prompt='prompts/b.md')
 
             def body(ctx, item):
                 if item.key == 'p':
@@ -944,7 +965,8 @@ class ForeachTest(RunbookTestCase):
 
     def test_a_foreach_over_the_index_of_the_one_closed_in_the_same_pass_reads_its_rows(self) -> None:
         def declare(rb: Runbook) -> None:
-            plan = rb.step('plan', executor='light', prompt='prompts/a.md', writes=['items.json'])
+            _, light = executors(rb)
+            plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['items.json'])
 
             def body(ctx, item):
                 yield from ()
@@ -954,12 +976,14 @@ class ForeachTest(RunbookTestCase):
             def main(ctx):
                 yield plan()
                 first = yield foreach('first', over='items.json', body=body)
-                second = yield foreach('second', over=first.files['first.index'], body=body)
+                second = yield foreach('second', over=files(first)['first.index'], body=body)
                 return end('ready', f'{second.items[0].reply["from"]}')
 
         rb = self.runbook(declare)
         self.start(rb)
-        with mock.patch.object(runbook.Replay, 'run', autospec=True, side_effect=runbook.Replay.run) as replays:
+        with mock.patch.object(
+            agent_runbooks.Replay, 'run', autospec=True, side_effect=agent_runbooks.Replay.run
+        ) as replays:
             out = self.reply(rb, 'main/plan', contents={'items.json': json.dumps([{'key': 'a'}])})
         self.assertTrue(out.startswith('end: ready (after `main/second`)'), out)
         self.assertTrue(out.rstrip().endswith(', done.'), out)
@@ -972,7 +996,8 @@ class ForeachTest(RunbookTestCase):
 
     def test_a_skipped_failure_of_a_nested_foreach_does_not_stop_the_outer_one(self) -> None:
         def declare(rb: Runbook) -> None:
-            page = rb.step('page', executor='light', prompt='prompts/c.md')
+            _, light = executors(rb)
+            page = rb.step('page', executor=light, prompt='prompts/c.md')
 
             def body(ctx, item):
                 pages = yield foreach('pages', over='pages.json', body=page(), on_item_failure='skip')
@@ -1007,7 +1032,8 @@ class ForeachTest(RunbookTestCase):
 
     def test_a_body_that_returns_a_non_json_value_is_refused_before_state_is_written(self) -> None:
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
 
             def body(ctx, item):
                 yield work()
@@ -1040,7 +1066,8 @@ class ForeachTest(RunbookTestCase):
             with self.subTest(problem=problem):
 
                 def declare(rb: Runbook, kwargs: dict[str, Any] = kwargs) -> None:
-                    work = rb.step('work', executor='main', prompt='prompts/a.md')
+                    strong, _ = executors(rb)
+                    work = rb.step('work', executor=strong, prompt='prompts/a.md')
 
                     @rb.flow
                     def main(ctx):
@@ -1083,7 +1110,7 @@ class StartTest(RunbookTestCase):
                         'inputs': {},
                         'files_in': {},
                         'files': {},
-                        'schema': runbook.reply_schema({}),
+                        'schema': agent_runbooks.reply_schema({}),
                         'writes': {},
                         'started_at': '2026-10-03T10:00:00Z',
                         'ended_at': None,
@@ -1128,7 +1155,7 @@ class StartTest(RunbookTestCase):
         self.start(self.rb)
         self.assertEqual(
             self.first_line(self.reply(self.rb, 'main/first')),
-            'launch step `main/second` as a new subagent, executor `main`: Main model',
+            'launch step `main/second` as a new subagent, executor `strong`: Strong model',
         )
         out = self.reply(self.rb, 'main/second')
         self.assertEqual(
@@ -1175,7 +1202,7 @@ class StartTest(RunbookTestCase):
         os.makedirs(self.run_dir)
         with open(os.path.join(self.run_dir, 'state.json'), 'w') as f:
             json.dump({'runbook': 'x', 'status': 'running', 'inputs': {}, 'sections': []}, f)
-        self.assertIn('is format 1, and runbook.py 2.0.0 reads format 2', self.fails(self.rb))
+        self.assertIn('is format 1, and agent_runbooks.py 2.0.0 reads format 2', self.fails(self.rb))
 
 
 class InputsTest(RunbookTestCase):
@@ -1212,11 +1239,14 @@ class InputsTest(RunbookTestCase):
 
     def test_the_flow_reads_them(self) -> None:
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md', inputs=['ticket', ('mode', 'fast')])
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md', inputs=['ticket', ('mode', 'fast')])
 
             @rb.flow
             def main(ctx):
-                yield work(executor='light' if ctx.inputs.rounds > 2 else 'main', rounds=ctx.inputs.rounds, tags=['x'])
+                yield work(
+                    executor='light' if ctx.inputs.rounds > 2 else 'strong', rounds=ctx.inputs.rounds, tags=['x']
+                )
                 return end('ready')
 
         rb = self.runbook(declare, ticket=str, rounds=2)
@@ -1227,10 +1257,28 @@ class InputsTest(RunbookTestCase):
         self.assertEqual(self.messages['main/work'][3:7], ['ticket: T-1', 'mode: fast', 'rounds: 3', 'tags: ["x"]'])
         self.assertEqual(self.record('main/work')['inputs'], {'rounds': 3, 'tags': ['x']})
 
+    def test_a_call_takes_an_executor_or_the_name_of_a_declared_one(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, light = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
+
+            @rb.flow
+            def main(ctx):
+                yield parallel('picks', a=work(executor=light), b=work(executor=ctx.inputs.coder), c=work())
+                return end('ready')
+
+        rb = self.runbook(declare, coder=str)
+        self.start(rb, coder='light')
+        self.assertEqual(
+            [(c['id'], c['executor']) for c in self.state()['calls'] if c['kind'] == 'step'],
+            [('main/picks/a', 'light'), ('main/picks/b', 'light'), ('main/picks/c', 'strong')],
+        )
+
     def test_declared_pairs_are_one_line_each_as_a_call_s_inputs_are(self) -> None:
         def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
             work = rb.step(
-                'work', executor='main', prompt='prompts/a.md', inputs=[('tags', ['a']), ('note', 'two\nlines')]
+                'work', executor=strong, prompt='prompts/a.md', inputs=[('tags', ['a']), ('note', 'two\nlines')]
             )
 
             @rb.flow
@@ -1274,8 +1322,9 @@ class AttemptTest(RunbookTestCase):
 
     def test_interrupted_and_relaunch_refuse_what_they_do_not_take_without_writing(self) -> None:
         def declare(rb: Runbook) -> None:
-            publish = rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish')
-            work = rb.step('work', executor='main', prompt='prompts/b.md')
+            strong, _ = executors(rb)
+            publish = rb.step('publish', executor=strong, prompt='prompts/a.md', side_effects='publish')
+            work = rb.step('work', executor=strong, prompt='prompts/b.md')
             ask = rb.human('ask', question='Proceed?')
 
             @rb.flow
@@ -1304,7 +1353,8 @@ class AttemptTest(RunbookTestCase):
 
     def test_a_side_effect_step_interrupted_asks_the_human(self) -> None:
         def declare(rb: Runbook) -> None:
-            publish = rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish')
+            strong, _ = executors(rb)
+            publish = rb.step('publish', executor=strong, prompt='prompts/a.md', side_effects='publish')
 
             @rb.flow
             def main(ctx):
@@ -1322,8 +1372,9 @@ class AttemptTest(RunbookTestCase):
 
     def test_a_failed_group_withdraws_the_side_effect_question_and_refuses_the_relaunch(self) -> None:
         def declare(rb: Runbook) -> None:
-            publish = rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish')
-            work = rb.step('work', executor='main', prompt='prompts/b.md')
+            strong, _ = executors(rb)
+            publish = rb.step('publish', executor=strong, prompt='prompts/a.md', side_effects='publish')
+            work = rb.step('work', executor=strong, prompt='prompts/b.md')
 
             @rb.flow
             def main(ctx):
@@ -1350,8 +1401,9 @@ class AttemptTest(RunbookTestCase):
 
     def test_a_side_effect_step_that_ends_in_a_failed_group_is_neither_asked_about_nor_withdrawn(self) -> None:
         def declare(rb: Runbook) -> None:
-            publish = rb.step('publish', executor='main', prompt='prompts/a.md', side_effects='publish')
-            work = rb.step('work', executor='main', prompt='prompts/b.md')
+            strong, _ = executors(rb)
+            publish = rb.step('publish', executor=strong, prompt='prompts/a.md', side_effects='publish')
+            work = rb.step('work', executor=strong, prompt='prompts/b.md')
 
             @rb.flow
             def main(ctx):
@@ -1368,11 +1420,12 @@ class AttemptTest(RunbookTestCase):
 
 
 def produce_and_ask(rb: Runbook) -> None:
-    produce = rb.step('produce', executor='main', prompt='prompts/a.md', writes=['x.md'])
+    strong, _ = executors(rb)
+    produce = rb.step('produce', executor=strong, prompt='prompts/a.md', writes=['x.md'])
     ask = rb.human(
         'ask', choices=['Continue', 'stop'], writes='answer.md', question='Read `<run>/x.md`. Continue or stop?'
     )
-    go = rb.step('go', executor='main', prompt='prompts/b.md', reads=['answer.md'])
+    go = rb.step('go', executor=strong, prompt='prompts/b.md', reads=['answer.md'])
 
     @rb.flow
     def main(ctx):
@@ -1416,7 +1469,9 @@ class HumanTest(RunbookTestCase):
 
     def test_answer_ignores_case(self) -> None:
         out = self.call(self.rb, 'answer', 'main/ask', ' CONTINUE ')
-        self.assertEqual(self.first_line(out), 'launch step `main/go` as a new subagent, executor `main`: Main model')
+        self.assertEqual(
+            self.first_line(out), 'launch step `main/go` as a new subagent, executor `strong`: Strong model'
+        )
         self.assertEqual(self.record('main/ask')['reply'], {'choice': 'Continue'})
         self.assertIn('- main/ask: answered: Continue\n', self.progress())
 
@@ -1442,7 +1497,8 @@ class HumanTest(RunbookTestCase):
 
     def test_reply_fields_are_taken_as_json(self) -> None:
         def declare(rb: Runbook) -> None:
-            fix = rb.step('fix', executor='main', prompt='prompts/a.md', reply={'left': int})
+            strong, _ = executors(rb)
+            fix = rb.step('fix', executor=strong, prompt='prompts/a.md', reply={'left': int})
             ask = rb.human(
                 'ask',
                 choices=['more', 'stop'],
@@ -1518,7 +1574,8 @@ class ReplySchemaTest(RunbookTestCase):
     """Each launch leaves the JSON Schema of the step's reply in <run>/schemas for its executor."""
 
     def one(self, rb: Runbook, **reply: Any) -> None:
-        review = rb.step('review', executor='main', prompt='prompts/a.md', reply=reply)
+        strong, _ = executors(rb)
+        review = rb.step('review', executor=strong, prompt='prompts/a.md', reply=reply)
 
         @rb.flow
         def main(ctx):
@@ -1539,7 +1596,7 @@ class ReplySchemaTest(RunbookTestCase):
             schema,
             {
                 'type': 'object',
-                'description': runbook.SCHEMA_ABOUT,
+                'description': agent_runbooks.SCHEMA_ABOUT,
                 'properties': {
                     'status': {'type': 'string', 'enum': ['done', 'failed', 'blocked']},
                     'reason': {'type': ['string', 'null']},
@@ -1575,7 +1632,7 @@ class ReplySchemaTest(RunbookTestCase):
 
     def test_field_schemas_without_a_type_and_with_several(self) -> None:
         self.assertEqual(
-            runbook.reply_schema(
+            agent_runbooks.reply_schema(
                 {
                     'verdict': {'enum': ['ok', 'no']},
                     'n': {'type': ['integer', 'null']},
@@ -1612,12 +1669,13 @@ class ReplySchemaTest(RunbookTestCase):
             "no field 'findings'", self.call(changed, 'reply', 'main/review', '{"status": "done", "passed": true}')
         )
         self.assertEqual(self.launched(self.reply(changed, 'main/review', findings=0)), ['main/review#2'])
-        self.assertEqual(self.record('main/review#2')['schema'], runbook.reply_schema({'passed': bool}))
+        self.assertEqual(self.record('main/review#2')['schema'], agent_runbooks.reply_schema({'passed': bool}))
 
     def test_a_running_attempt_keeps_its_schema_file_when_a_later_launch_of_its_step_declares_another(self) -> None:
         def declare(fields: dict[str, Any]) -> Callable[[Runbook], None]:
             def declare(rb: Runbook) -> None:
-                s = rb.step('s', executor='main', prompt='prompts/a.md', reply=fields)
+                strong, _ = executors(rb)
+                s = rb.step('s', executor=strong, prompt='prompts/a.md', reply=fields)
 
                 def chain(ctx):
                     yield s()
@@ -1640,7 +1698,7 @@ class ReplySchemaTest(RunbookTestCase):
         )
         for label, fields in (('main/g/b', {'n': int}), ('main/g/a/s#2', {'m': int})):
             with open(paths[label]) as f:
-                self.assertEqual(json.load(f), runbook.reply_schema(fields))
+                self.assertEqual(json.load(f), agent_runbooks.reply_schema(fields))
         self.reply(changed, 'main/g/b', n=2)
         self.assertEqual(self.record('main/g/b')['reply'], {'n': 2})
 
@@ -1681,7 +1739,7 @@ class ReplySchemaTest(RunbookTestCase):
                     rb = self.runbook(lambda rb: None)
                     with self.assertRaises(TypeError) as caught:
                         if kind == 'step':
-                            rb.step('review', executor='main', prompt='prompts/a.md', reply=reply)
+                            rb.step('review', executor=executors(rb)[0], prompt='prompts/a.md', reply=reply)
                         else:
                             rb.human('review', question='Proceed?', reply=reply)
                     self.assertEqual(str(caught.exception), f'step review: {problem}')
@@ -1693,7 +1751,8 @@ class CorrectionTest(RunbookTestCase):
     """A reply that does not pass the check goes back to its executor once before the step is failed."""
 
     def declare(self, rb: Runbook) -> None:
-        checks = rb.step('checks', executor='light', prompt='prompts/a.md', reply={'passed': bool})
+        _, light = executors(rb)
+        checks = rb.step('checks', executor=light, prompt='prompts/a.md', reply={'passed': bool})
 
         @rb.flow
         def main(ctx):
@@ -1752,7 +1811,7 @@ class CorrectionTest(RunbookTestCase):
         )
         self.assertEqual([r['reply'] for r in record['invalid_replies']], ['{"status": "done"}'] * 2)
         with open(os.path.join(self.run_dir, 'schemas', '00-checks.json')) as f:
-            self.assertEqual(json.load(f), runbook.reply_schema({'passed': bool}))
+            self.assertEqual(json.load(f), agent_runbooks.reply_schema({'passed': bool}))
 
     def test_executor_that_cannot_be_asked_again(self) -> None:
         rb = self.runbook(self.declare)
@@ -1770,8 +1829,9 @@ class CorrectionTest(RunbookTestCase):
 
     def test_a_side_effect_step_is_corrected_before_the_human_is_asked(self) -> None:
         def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
             commit = rb.step(
-                'commit', executor='main', prompt='prompts/a.md', reply={'sha': str}, side_effects='commit'
+                'commit', executor=strong, prompt='prompts/a.md', reply={'sha': str}, side_effects='commit'
             )
 
             @rb.flow
@@ -1817,7 +1877,7 @@ class TimingTest(RunbookTestCase):
             [
                 ('main/first', 1, 'light', '2026-10-03T10:00:00Z', '2026-10-03T10:01:00Z'),
                 ('main/first', 2, 'light', '2026-10-03T10:02:00Z', '2026-10-03T10:03:00Z'),
-                ('main/second', 1, 'main', '2026-10-03T10:04:00Z', None),
+                ('main/second', 1, 'strong', '2026-10-03T10:04:00Z', None),
             ],
         )
 
@@ -1830,7 +1890,7 @@ class TimingTest(RunbookTestCase):
             self.fields()[1:],
             [
                 ('main/ask', 1, None, '2026-10-03T10:02:00Z', '2026-10-03T10:03:00Z'),
-                ('main/go', 1, 'main', '2026-10-03T10:04:00Z', None),
+                ('main/go', 1, 'strong', '2026-10-03T10:04:00Z', None),
             ],
         )
 
@@ -1844,8 +1904,9 @@ class FlowTest(RunbookTestCase):
         before = self.state()
 
         def declare(rb: Runbook) -> None:
-            other = rb.step('other', executor='main', prompt='prompts/a.md')
-            rb.step('first', executor='main', prompt='prompts/a.md')
+            strong, _ = executors(rb)
+            other = rb.step('other', executor=strong, prompt='prompts/a.md')
+            rb.step('first', executor=strong, prompt='prompts/a.md')
 
             @rb.flow
             def main(ctx):
@@ -1862,8 +1923,9 @@ class FlowTest(RunbookTestCase):
 
     def test_an_author_s_bug_keeps_the_reply_and_the_run_resumes_after_the_fix(self) -> None:
         def declare(rb: Runbook, broken: bool) -> None:
-            first = rb.step('first', executor='light', prompt='prompts/a.md', reply={'n': int})
-            second = rb.step('second', executor='main', prompt='prompts/b.md')
+            strong, light = executors(rb)
+            first = rb.step('first', executor=light, prompt='prompts/a.md', reply={'n': int})
+            second = rb.step('second', executor=strong, prompt='prompts/b.md')
 
             @rb.flow
             def main(ctx):
@@ -1885,9 +1947,35 @@ class FlowTest(RunbookTestCase):
         fixed = self.runbook(lambda rb: declare(rb, False))
         self.assertEqual(self.launched(self.call(fixed)), ['main/second'])
 
+    def test_a_copy_of_a_result_passed_to_a_call_is_a_defect_of_flow_py(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md', writes=['out.md'])
+            use = rb.step('use', executor=strong, prompt='prompts/b.md')
+
+            @rb.flow
+            def main(ctx):
+                r = yield work()
+                yield use(previous=copy.copy(r))
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        for name, path in self.lines('main/work', 'write').items():
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(name)
+        err = self.fails(rb, 'reply', 'main/work', '{"status": "done"}')
+        self.assertIn("`main/use`: input 'previous' is StepResult(), not a result a yield returned", err)
+        self.assertIn('What you passed is recorded. This is a defect in flow.py', err)
+        self.assertNotIn('Traceback', err)
+        self.assertEqual(self.record('main/work')['status'], 'done')
+        self.assertEqual(len(self.state()['calls']), 1)
+
     def test_what_the_flow_yields_passes_and_returns_is_checked(self) -> None:
         def flows(rb: Runbook) -> dict[str, Callable[..., Any]]:
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
+            foreign = Runbook().executor('strong', 'Strong model')
 
             def forgot_the_call(ctx):
                 yield work
@@ -1905,8 +1993,8 @@ class FlowTest(RunbookTestCase):
             def an_undeclared_executor(ctx):
                 yield work(executor='ghost')
 
-            def a_reserved_branch(ctx):
-                yield parallel('group', id=work())
+            def a_foreign_executor(ctx):
+                yield work(executor=foreign)
 
             def a_bad_branch(ctx):
                 yield parallel('group', a='work')  # type: ignore[arg-type]
@@ -1925,8 +2013,9 @@ class FlowTest(RunbookTestCase):
                 'yields 5: a flow yields a step call, parallel(...) or foreach(...)': yields_a_value,
                 "the flow returned 'ready'; it ends with `return end(<status>, <report>)`": returns_a_value,
                 "`main/work`: input 'thing' is <object object": passes_an_object,
-                "`main/work`: executor 'ghost' is not declared": an_undeclared_executor,
-                "parallel('group'): branch 'id' is reserved": a_reserved_branch,
+                "`main/work`: executor 'ghost' is not declared in this flow.py": an_undeclared_executor,
+                "`main/work`: executor Executor(name='strong', description='Strong model') is not declared in this "
+                'flow.py': a_foreign_executor,
                 "parallel('group'): branch 'a' is 'work', neither a step call nor a generator function": a_bad_branch,
                 "parallel('group'): branch 'a/work': the name must be letters, digits, _ . -": a_branch_key_with_a_slash,
                 "parallel('a/b'): the name must be letters, digits, _ . -": a_bad_group_name,
@@ -1947,10 +2036,11 @@ class FlowTest(RunbookTestCase):
 
     def test_a_declared_file_the_launch_did_not_write_is_not_recorded_as_written(self) -> None:
         def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
             work = rb.step(
-                'work', executor='main', prompt='prompts/a.md', reads=['notes.md'], writes=['notes.md', 'log.md']
+                'work', executor=strong, prompt='prompts/a.md', reads=['notes.md'], writes=['notes.md', 'log.md']
             )
-            report = rb.step('report', executor='main', prompt='prompts/b.md')
+            report = rb.step('report', executor=strong, prompt='prompts/b.md')
 
             @rb.flow
             def main(ctx):
@@ -1983,14 +2073,14 @@ class FlowTest(RunbookTestCase):
     def test_a_replay_of_600_records_takes_well_under_a_second(self) -> None:
         rb = self.runbook(review_loop, brief=str, maxFixRounds=1000)
         self.start(rb, brief='brief.md')
-        state = runbook.RunState.load(self.run_dir)
+        state = agent_runbooks.RunState.load(self.run_dir)
         state.calls = []
         names = ['implement'] + ['review', 'fix'] * 300
         counts: dict[str, int] = {}
         for name in names:
             counts[name] = counts.get(name, 0) + 1
             address = f'main/{name}' + (f'#{counts[name]}' if counts[name] > 1 else '')
-            record = runbook.CallRecord(id=address, kind='step', step=name, status='done', executor='main')
+            record = agent_runbooks.CallRecord(id=address, kind='step', step=name, status='done', executor='strong')
             record.reply = {'findings': 1} if name == 'review' else {}
             state.append(record)
             record.files = record.writes = {
@@ -2006,7 +2096,8 @@ class FlowTest(RunbookTestCase):
 
     def test_a_command_is_one_replay_however_many_groups_it_opens_and_closes(self) -> None:
         def declare(rb: Runbook) -> None:
-            plan = rb.step('plan', executor='light', prompt='prompts/a.md', writes=['items.json'])
+            _, light = executors(rb)
+            plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['items.json'])
 
             def body(ctx, item):
                 yield from ()
@@ -2035,7 +2126,9 @@ class FlowTest(RunbookTestCase):
                 return end('ready', f'{sum(item.reply["ok"] for item in done.items)} done, <run>/items.index')
 
         def timed(rb: Runbook, *args: str) -> tuple[str, int, float]:
-            with mock.patch.object(runbook.Replay, 'run', autospec=True, side_effect=runbook.Replay.run) as replays:
+            with mock.patch.object(
+                agent_runbooks.Replay, 'run', autospec=True, side_effect=agent_runbooks.Replay.run
+            ) as replays:
                 began = time.perf_counter()
                 out = self.call(rb, *args)
                 return out, replays.call_count, time.perf_counter() - began
@@ -2063,10 +2156,135 @@ class FlowTest(RunbookTestCase):
         self.assertLess(elapsed, 1)
 
 
+class ResultTest(RunbookTestCase):
+    def test_files_and_address_read_every_kind_of_result_and_nothing_else_is_on_it(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def declare(rb: Runbook) -> None:
+            strong, light = executors(rb)
+            plan = rb.step('plan', executor=light, prompt='prompts/a.md', writes=['sites.json'], reply={'n': int})
+            ask = rb.human('ask', choices=['go'], writes='answer.md', question='Go?')
+            review = rb.step('review', executor=strong, prompt='prompts/b.md', writes=['review.md'])
+            migrate = rb.step('migrate', executor=strong, prompt='prompts/c.md', writes=['migrated.md'])
+
+            def chain(ctx):
+                yield from ()
+                return 'chained'
+
+            @rb.flow
+            def main(ctx):
+                seen['step'] = yield plan()
+                seen['human'] = yield ask()
+                seen['parallel'] = yield parallel('reviews', a=review(), b=chain)
+                seen['foreach'] = yield foreach('sites', over='sites.json', body=migrate())
+                seen['item'] = seen['foreach'].items[0]
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.reply(rb, 'main/plan', {'sites.json': '[{"key": "a"}]'}, n=1)
+        self.call(rb, 'answer', 'main/ask', 'go')
+        self.reply(rb, 'main/reviews/a')
+        out = self.reply(rb, 'main/sites[a]/migrate')
+        self.assertTrue(out.startswith('end: ready'), out)
+        run = self.run_dir
+        expected = {
+            'step': ('main/plan', {'sites.json': f'{run}/00-sites.json'}, {'n': 1}),
+            'human': ('main/ask', {'answer.md': f'{run}/01-answer.md'}, {'choice': 'go'}),
+            'parallel': ('main/reviews', {}, {'a', 'b'}),
+            'foreach': ('main/sites', {'sites.index': f'{run}/04-sites.index.json'}, {'items'}),
+            'item': ('main/sites[a]', {'migrated.md': f'{run}/06-migrated.md'}, {'key', 'status', 'reply', 'reason'}),
+        }
+        for kind, (where, written, attributes) in expected.items():
+            with self.subTest(kind=kind):
+                result = seen[kind]
+                self.assertEqual(address(result), where)
+                self.assertEqual(files(result), written)
+                if isinstance(attributes, dict):
+                    self.assertEqual(vars(result), attributes)
+                else:
+                    self.assertEqual(set(vars(result)), attributes)
+        self.assertEqual(seen['parallel'].b, 'chained')
+        self.assertEqual(address(seen['parallel'].a), 'main/reviews/a')
+        files(seen['step'])['sites.json'] = 'changed'
+        self.assertEqual(files(seen['step']), {'sites.json': f'{run}/00-sites.json'})
+
+    def test_anything_but_a_result_is_refused(self) -> None:
+        for value in (5, None, {'id': 'main/plan', 'files': {}}, StepFailed('x'), agent_runbooks.StepResult(n=1)):
+            for function in (files, address):
+                with self.subTest(value=value, function=function.__name__):
+                    with self.assertRaises(TypeError) as caught:
+                        function(value)  # type: ignore[arg-type]
+                    self.assertEqual(
+                        str(caught.exception),
+                        f'{function.__name__}() takes what a yield returned or an item of a foreach, got {value!r}',
+                    )
+
+    def test_id_files_and_a_leading_underscore_work_as_reply_fields_and_branch_keys(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            names = {'id': str, 'files': list, '_x': int}
+            work = rb.step('work', executor=strong, prompt='prompts/a.md', writes=['out.md'], reply=names)
+            ask = rb.human('ask', choices=['go'], question='Go?', reply=names)
+            use = rb.step('use', executor=strong, prompt='prompts/b.md')
+
+            @rb.flow
+            def main(ctx):
+                r = yield work()
+                a = yield ask()
+                g = yield parallel('group', id=work(), files=work(), _x=work())
+                seen.update(r=r, a=a, g=g)
+                yield use(r=r, g=g)
+                return end('ready', f'{r.id} {r.files} {r._x} {a.id} {g.id.id} {g.files._x} {g._x.files}')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.reply(rb, 'main/work', id='w', files=['f'], _x=1)
+        answer = json.dumps({'choice': 'go', 'id': 'h', 'files': [], '_x': 2})
+        out = self.call(rb, 'answer', 'main/ask', answer, 'go')
+        self.assertEqual(self.launched(out), ['main/group/id', 'main/group/files', 'main/group/_x'])
+        for key, n in (('id', 3), ('files', 4), ('_x', 5)):
+            out = self.reply(rb, f'main/group/{key}', id=key, files=[key], _x=n)
+        self.assertEqual(self.launched(out), ['main/use'])
+        self.assertEqual(address(seen['r']), 'main/work')
+        self.assertEqual(files(seen['r']), {'out.md': f'{self.run_dir}/00-out.md'})
+        self.assertEqual(vars(seen['a']), {'choice': 'go', 'id': 'h', 'files': [], '_x': 2})
+        self.assertEqual(address(seen['g']), 'main/group')
+        self.assertEqual(address(seen['g'].files), 'main/group/files')
+        self.assertEqual(
+            self.record('main/use')['inputs'],
+            {
+                'r.id': 'w',
+                'r.files': ['f'],
+                'r._x': 1,
+                **{
+                    f'g.{key}.{name}': value
+                    for key, n in (('id', 3), ('files', 4), ('_x', 5))
+                    for name, value in (('id', key), ('files', [key]), ('_x', n))
+                },
+            },
+        )
+        self.assertEqual(
+            self.reads('main/use'),
+            {
+                'r/out.md': f'{self.run_dir}/00-out.md',
+                'g.id/out.md': f'{self.run_dir}/03-out.md',
+                'g.files/out.md': f'{self.run_dir}/04-out.md',
+                'g._x/out.md': f'{self.run_dir}/05-out.md',
+            },
+        )
+        self.assertIn('r.files: ["f"]', self.messages['main/use'])
+        out = self.reply(rb, 'main/use')
+        self.assertTrue(out.strip().endswith(", w ['f'] 1 h id 4 ['_x']."), out)
+
+
 class DeclarationTest(RunbookTestCase):
     def declare(self, rb: Runbook, kind: str, name: str, **kwargs: Any) -> None:
+        strong, _ = executors(rb)
         if kind == 'step':
-            rb.step(name, executor='main', prompt='prompts/a.md', **kwargs)
+            rb.step(name, executor=strong, prompt='prompts/a.md', **kwargs)
         else:
             rb.human(name, question='Proceed?', **kwargs)
 
@@ -2097,9 +2315,10 @@ class DeclarationTest(RunbookTestCase):
         cases = [
             ('step', 'a/b', {}, ValueError, "step 'a/b': the name must be letters, digits, _ . -"),
             ('step', 'w#2', {}, ValueError, "step 'w#2': the name must be"),
-            ('step', 'work', {'reply': {'id': str}}, ValueError, "step 'work': reply field 'id' is reserved"),
-            ('step', 'work', {'reply': {'files': list}}, ValueError, "step 'work': reply field 'files' is reserved"),
             ('step', 'work', {'reply': {'status': str}}, ValueError, "step 'work': reply field 'status' is reserved"),
+            ('step', 'work', {'reply': {'reason': str}}, ValueError, "step 'work': reply field 'reason' is reserved"),
+            ('human', 'ask', {'reply': {'status': str}}, ValueError, "step 'ask': reply field 'status' is reserved"),
+            ('human', 'ask', {'reply': {'reason': str}}, ValueError, "step 'ask': reply field 'reason' is reserved"),
             ('human', 'ask', {'reply': {'choice': str}}, ValueError, "step 'ask': reply field 'choice' is reserved"),
             (
                 'step',
@@ -2122,13 +2341,42 @@ class DeclarationTest(RunbookTestCase):
                 self.assertIn(message, str(caught.exception))
                 self.assertEqual(rb.steps, {})
         rb = self.runbook(lambda rb: None)
-        with self.assertRaisesRegex(TypeError, "step 'work': executor is .*, not the name of a declared executor"):
-            rb.step('work', executor=lambda s: 'main', prompt='prompts/a.md')  # type: ignore[arg-type]
         with self.assertRaisesRegex(TypeError, "step 'work': prompt takes strings, got 3"):
-            rb.step('work', executor='main', prompt=3)  # type: ignore[arg-type]
+            rb.step('work', executor=executors(rb)[0], prompt=3)  # type: ignore[arg-type]
         with self.assertRaisesRegex(TypeError, "step 'ask': question takes strings, got None"):
             rb.human('ask', question=None)  # type: ignore[arg-type]
         self.assertEqual(rb.steps, {})
+
+    def test_a_step_takes_an_executor_this_runbook_returned(self) -> None:
+        rb = self.runbook(lambda rb: None)
+        foreign = Runbook().executor('strong', 'Strong model')
+        for executor in ('strong', foreign, None):
+            with self.subTest(executor=executor):
+                with self.assertRaises(TypeError) as caught:
+                    rb.step('work', executor=executor, prompt='prompts/a.md')  # type: ignore[arg-type]
+                self.assertEqual(
+                    str(caught.exception),
+                    f"step 'work': executor is {executor!r}, not what executor() of this flow.py returned",
+                )
+                self.assertEqual(rb.steps, {})
+
+    def test_executor_names_are_refused_as_step_names_are(self) -> None:
+        rb = self.runbook(lambda rb: None)
+        strong, _ = executors(rb)
+        self.assertEqual(strong, agent_runbooks.Executor('strong', 'Strong model'))
+        cases = [
+            ('strong', 'Other model', ValueError, "executor 'strong' is already declared"),
+            ('a/b', 'Other model', ValueError, "executor 'a/b': the name must be letters, digits, _ . -"),
+            ('', 'Other model', ValueError, "executor '': the name must be"),
+            ('other', None, TypeError, "executor 'other': description takes a string, got None"),
+        ]
+        for name, description, error, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(error) as caught:
+                    rb.executor(name, description)  # type: ignore[arg-type]
+                self.assertIn(message, str(caught.exception))
+        self.assertEqual(list(rb.executors), ['strong', 'light'])
+        self.assertIs(rb.executors['strong'], strong)
 
     def test_the_flow_is_one_generator_function(self) -> None:
         rb = self.runbook(lambda rb: None)
@@ -2152,9 +2400,10 @@ class DeclarationTest(RunbookTestCase):
 
     def test_iterables_and_human_writes_remain_supported(self) -> None:
         rb = self.runbook(lambda rb: None)
+        strong, _ = executors(rb)
         work = rb.step(
             'work',
-            executor='main',
+            executor=strong,
             prompt='prompts/a.md',
             inputs=iter(['repo', ('rounds', 2)]),
             reads=('brief.md',),
@@ -2180,8 +2429,8 @@ class CheckTest(RunbookTestCase):
         with mock.patch.object(sys, 'argv', [os.path.join(self.here, 'flow.py')]):
             rb = Runbook()
         rb.inputs(ticket=str)
-        rb.executor('main', 'Main model')
-        rb.step('ghostly', executor='ghost', prompt='prompts/missing.md', inputs=['ticket', 'nope'])
+        strong = rb.executor('strong', 'Strong model')
+        rb.step('ghostly', executor=strong, prompt='prompts/missing.md', inputs=['ticket', 'nope'])
         rb.human('ask', question='')
         os.remove(os.path.join(self.here, 'prompts', 'common.md'))
         code, out = self.check(rb)
@@ -2192,7 +2441,6 @@ class CheckTest(RunbookTestCase):
                 "inputs: 'repo' is not declared",
                 'no flow: decorate the generator function of the flow with @rb.flow',
                 'step ghostly: prompts/missing.md does not exist',
-                "step ghostly: executor 'ghost' is not declared",
                 "step ghostly: input 'nope' is not a declared run input",
                 'step ask: human step without a question',
                 'prompts/common.md does not exist',
@@ -2205,27 +2453,27 @@ class StateSaveTest(RunbookTestCase):
     def test_serialization_error_keeps_the_previous_state_whole(self) -> None:
         rb = self.runbook(linear)
         self.start(rb)
-        path = runbook.RunState.path(self.run_dir)
+        path = agent_runbooks.RunState.path(self.run_dir)
         with open(path, 'rb') as f:
             before = f.read()
-        state = runbook.RunState.load(self.run_dir)
+        state = agent_runbooks.RunState.load(self.run_dir)
         state.inputs['bad'] = object()
-        with self.assertRaisesRegex(runbook.FlowError, 'state.json cannot hold what the flow gave'):
+        with self.assertRaisesRegex(agent_runbooks.FlowError, 'state.json cannot hold what the flow gave'):
             state.save(self.run_dir)
         with open(path, 'rb') as f:
             self.assertEqual(f.read(), before)
-        self.assertEqual(runbook.RunState.load(self.run_dir).inputs, {'repo': '/repo'})
+        self.assertEqual(agent_runbooks.RunState.load(self.run_dir).inputs, {'repo': '/repo'})
 
     def test_save_overwrites_a_leftover_temporary_file(self) -> None:
         rb = self.runbook(linear)
         self.start(rb)
-        path = runbook.RunState.path(self.run_dir)
+        path = agent_runbooks.RunState.path(self.run_dir)
         with open(path + '.tmp', 'w') as f:
             f.write('interrupted write')
-        state = runbook.RunState.load(self.run_dir)
+        state = agent_runbooks.RunState.load(self.run_dir)
         state.inputs['repo'] = '/new'
         state.save(self.run_dir)
-        self.assertEqual(runbook.RunState.load(self.run_dir).inputs['repo'], '/new')
+        self.assertEqual(agent_runbooks.RunState.load(self.run_dir).inputs['repo'], '/new')
         self.assertFalse(os.path.exists(path + '.tmp'))
 
 
@@ -2238,7 +2486,8 @@ class ShellCommandTest(RunbookTestCase):
         executable = "/tmp/python bin/py'thon"
 
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
             ask = rb.human('ask', question='Proceed?', choices=['yes', 'no'])
 
             @rb.flow
@@ -2284,7 +2533,8 @@ class ShellCommandTest(RunbookTestCase):
 
     def test_under_uv_run_commands_go_through_uv(self) -> None:
         def declare(rb: Runbook) -> None:
-            work = rb.step('work', executor='main', prompt='prompts/a.md')
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
 
             @rb.flow
             def main(ctx):

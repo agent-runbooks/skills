@@ -2,6 +2,7 @@
 // The marks of the run's own status, for the tab title; an attempt's mark comes with it from the server.
 const RUN_MARKS = { ready: '✓', running: '●', waiting_for_human: '?', failed: '✗' };
 const OPEN = ['running', 'waiting'];
+const GROUPS = ['parallel', 'foreach'];
 const POLL_MS = 2000;
 // Run statuses with a chip colour of their own; running and any other end status stay grey.
 const CHIPS = { ready: 'ok', waiting_for_human: 'attention', needs_attention: 'attention', failed: 'failed' };
@@ -49,25 +50,45 @@ function serverNow() {
   return Date.now() + clockOffset;
 }
 
+// A row of the list is selected as { kind: 'row', id: its address }, a run file as { kind: 'file', name }.
+function isRow(entry) {
+  return !GROUPS.includes(entry.type);
+}
+
+// The innermost row holding the attempt: a branch inside an item holds it as the item does.
+function rowTarget(label) {
+  let found = null;
+  for (const r of data.rows) {
+    if (isRow(r) && r.attempts.includes(label) && (!found || r.depth > found.depth)) found = r;
+  }
+  return found ? { kind: 'row', id: found.id } : null;
+}
+
 function followTarget() {
   const calls = data.calls;
   const open = calls.find((c) => OPEN.includes(c.status));
   const last = open || calls[calls.length - 1];
-  if (last) return { kind: 'call', label: last.label };
+  if (last) return rowTarget(last.label);
   return data.run_files.length ? { kind: 'file', name: data.run_files[0] } : null;
 }
 
 function readHash() {
   const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has('row')) return { kind: 'row', id: params.get('row') };
+  // A #call=<label> link: render() replaces it with the row holding that attempt.
   if (params.has('call')) return { kind: 'call', label: params.get('call') };
   if (params.has('file')) return { kind: 'file', name: params.get('file') };
   return null;
 }
 
+function writeHash(target) {
+  history.replaceState(null, '', '#' + new URLSearchParams(target.kind === 'row' ? { row: target.id } : { file: target.name }));
+}
+
 function select(target) {
   follow = false;
   selection = target;
-  history.replaceState(null, '', '#' + new URLSearchParams(target.kind === 'call' ? { call: target.label } : { file: target.name }));
+  writeHash(target);
   render();
 }
 
@@ -78,7 +99,7 @@ function setFollow() {
 }
 
 function sameSelection(a, b) {
-  return a && b && a.kind === b.kind && a.label === b.label && a.name === b.name;
+  return Boolean(a && b && a.kind === b.kind && a.id === b.id && a.label === b.label && a.name === b.name);
 }
 
 function renderHeader() {
@@ -95,21 +116,30 @@ function renderHeader() {
   $('inputs-names').textContent = inputs.map(([k]) => k).join(', ');
 }
 
+// A group's header, or a row: a call of main, or a branch or an item standing for every attempt in it.
+function navLine(r, now) {
+  const depth = ` style="--depth: ${Number(r.depth) || 0}"`;
+  if (!isRow(r)) {
+    return `<div class="group-head"><span></span><span${depth} title="${esc(r.header)}">${esc(r.header)}</span></div>`;
+  }
+  const live = r.status === 'running' ? ' live' : '';
+  const selected = sameSelection(selection, { kind: 'row', id: r.id }) ? ' selected' : '';
+  const dur = r.open && r.started_at ? ` data-start="${esc(r.started_at)}"` : '';
+  const timed = { status: r.open ? 'running' : 'done', started_at: r.started_at, ended_at: r.ended_at };
+  const step = r.step ? ` <span class="step">${esc(r.step)}</span>` : '';
+  return `<div class="row ${esc(r.status)}${selected}" role="button" tabindex="0" data-row="${esc(r.id)}">` +
+    `<span class="mark-${esc(r.status)}${live}">${esc(r.mark)}</span>` +
+    `<span class="name"${depth}>${esc(r.label)}${step}</span><span class="exec">${esc(r.executor || '')}</span>` +
+    `<span class="dur"${dur}>${duration(timed, now)}</span><span title="${esc(r.note)}">${esc(r.note)}</span></div>`;
+}
+
 function renderNav() {
-  const key = JSON.stringify([data.calls, data.run_files, selection, follow]);
+  const key = JSON.stringify([data.rows, data.run_files, selection, follow]);
   if (key === navKey) return;
   navKey = key;
   const now = serverNow();
-  const rows = data.calls.map((c) => {
-    const live = c.status === 'running' ? ' live' : '';
-    const selected = selection && selection.kind === 'call' && selection.label === c.label ? ' selected' : '';
-    const dur = OPEN.includes(c.status) && c.started_at ? ` data-start="${esc(c.started_at)}"` : '';
-    return `<div class="row ${esc(c.status)}${selected}" role="button" tabindex="0" data-call="${esc(c.label)}">` +
-      `<span class="mark-${esc(c.status)}${live}">${esc(c.mark)}</span>` +
-      `<span>${esc(c.name)}</span><span class="exec">${esc(c.executor || '')}</span>` +
-      `<span class="dur"${dur}>${duration(c, now)}</span><span title="${esc(c.note)}">${esc(c.note)}</span></div>`;
-  });
-  $('calls').innerHTML = rows.join('') || '<div class="empty">No step has launched yet.</div>';
+  $('calls').innerHTML = data.rows.map((r) => navLine(r, now)).join('') ||
+    '<div class="empty">No step has launched yet.</div>';
   $('run-files').innerHTML = data.run_files.map((name) => {
     const selected = selection && selection.kind === 'file' && selection.name === name ? ' selected' : '';
     return `<button type="button" class="file-link${selected}" data-file="${esc(name)}">${esc(name)}</button>`;
@@ -164,14 +194,26 @@ function renderFile(name, text) {
   return `<pre class="raw">${esc(text)}</pre>`;
 }
 
+// What the right column shows: a title, and a block per attempt in the row, headed by its label when the row is
+// more than one attempt or a branch or an item.
 function detailParts() {
   if (!selection) return null;
   if (selection.kind === 'file') {
     if (!data.run_files.includes(selection.name)) return null;
-    return { title: selection.name, meta: '', log: [], files: [selection.name], ask: null };
+    return { title: selection.name, meta: '', blocks: [{ head: null, meta: '', log: [], files: [selection.name], ask: null }] };
   }
-  const call = data.calls.find((c) => c.label === selection.label);
-  if (!call) return null;
+  const row = data.rows.find((r) => isRow(r) && r.id === selection.id);
+  if (!row) return null;
+  const calls = new Map(data.calls.map((c) => [c.label, c]));
+  const blocks = row.attempts.filter((label) => calls.has(label)).map((label) => attemptBlock(calls.get(label)));
+  if (row.type === 'call' && blocks.length === 1) {
+    return { title: blocks[0].head, meta: blocks[0].meta, blocks: [{ ...blocks[0], head: null, meta: '' }] };
+  }
+  const title = row.id.startsWith('main/') ? row.id.slice('main/'.length) : row.id;
+  return { title, meta: String(row.status).replace('_', ' '), blocks };
+}
+
+function attemptBlock(call) {
   let ask = null;
   if (call.status === 'waiting') {
     const prefix = `- ${call.label}: asked: `;
@@ -179,12 +221,12 @@ function detailParts() {
     ask = line ? line.slice(prefix.length) : '';
   }
   const meta = [call.status, call.executor].filter(Boolean).join(' · ');
-  return { title: call.name, meta, log: call.log, files: call.files, ask };
+  return { head: call.name, meta, log: call.log, files: call.files, ask };
 }
 
 async function renderDetail() {
   const parts = detailParts();
-  const key = JSON.stringify([selection, parts, parts && parts.files.map(fileMeta)]);
+  const key = JSON.stringify([selection, parts, parts && parts.blocks.map((b) => b.files.map(fileMeta))]);
   if (key === shown.key) {
     pendingKey = null;
     return;
@@ -195,26 +237,33 @@ async function renderDetail() {
   if (!parts) {
     pendingKey = null;
     shown = { key, selection };
-    detail.innerHTML = '<p class="empty">Select a call or a file.</p>';
+    detail.innerHTML = '<p class="empty">Select a step or a file.</p>';
     return;
   }
   pendingKey = key;
-  let html = `<h2 class="detail-head">${esc(parts.title)}<span class="meta">${esc(parts.meta)}</span></h2>`;
-  if (parts.ask !== null) {
-    html += `<div class="ask"><strong>Waiting for the human.</strong><p>${esc(parts.ask)}</p>` +
-      '<p>The answer is given in the chat with the orchestrator.</p></div>';
-  }
-  if (parts.log.length) html += `<ul class="log">${parts.log.map((l) => `<li>${esc(l.slice(2))}</li>`).join('')}</ul>`;
-  const docs = await Promise.allSettled(parts.files.map(fileHtml));
+  const files = parts.blocks.flatMap((b) => b.files);
+  const docs = await Promise.allSettled(files.map(fileHtml));
   if (pendingKey !== key) return;
   pendingKey = null;
   const complete = docs.every((d) => d.status === 'fulfilled');
   if (!complete && !moved) return;
-  html += parts.files.map((name, i) => {
-    const body = docs[i].status === 'fulfilled' ? docs[i].value : `<p class="empty">${esc(name)} could not be read.</p>`;
-    return `<div class="doc">${parts.files.length > 1 || parts.title !== name ? `<div class="doc-name">${esc(name)}</div>` : ''}${body}</div>`;
+  const bodies = new Map(files.map((name, i) =>
+    [name, docs[i].status === 'fulfilled' ? docs[i].value : `<p class="empty">${esc(name)} could not be read.</p>`]));
+  let html = `<h2 class="detail-head">${esc(parts.title)}<span class="meta">${esc(parts.meta)}</span></h2>`;
+  html += parts.blocks.map((block) => {
+    let part = block.head === null ? '' : `<h3 class="block-head">${esc(block.head)}<span class="meta">${esc(block.meta)}</span></h3>`;
+    if (block.ask !== null) {
+      part += `<div class="ask"><strong>Waiting for the human.</strong><p>${esc(block.ask)}</p>` +
+        '<p>The answer is given in the chat with the orchestrator.</p></div>';
+    }
+    if (block.log.length) part += `<ul class="log">${block.log.map((l) => `<li>${esc(l.slice(2))}</li>`).join('')}</ul>`;
+    const title = block.head === null ? parts.title : block.head;
+    part += block.files.map((name) =>
+      `<div class="doc">${block.files.length > 1 || title !== name ? `<div class="doc-name">${esc(name)}</div>` : ''}${bodies.get(name)}</div>`).join('');
+    if (!block.files.length && block.ask === null) part += '<p class="empty">No output file yet.</p>';
+    return `<div class="block">${part}</div>`;
   }).join('');
-  if (!parts.files.length && parts.ask === null) html += '<p class="empty">No output file yet.</p>';
+  if (!parts.blocks.length) html += '<p class="empty">Nothing launched in it yet.</p>';
   const top = detail.scrollTop;
   detail.innerHTML = html;
   detail.scrollTop = moved ? 0 : top;
@@ -224,6 +273,13 @@ async function renderDetail() {
 function render() {
   if (!data) return;
   if (follow) selection = followTarget();
+  if (selection && selection.kind === 'call') {
+    const target = rowTarget(selection.label);
+    if (target) {
+      selection = target;
+      writeHash(target);
+    }
+  }
   renderHeader();
   renderNav();
   renderDetail();
@@ -261,14 +317,14 @@ function tick() {
 }
 
 $('calls').addEventListener('click', (e) => {
-  const row = e.target.closest('[data-call]');
-  if (row) select({ kind: 'call', label: row.dataset.call });
+  const row = e.target.closest('[data-row]');
+  if (row) select({ kind: 'row', id: row.dataset.row });
 });
 $('calls').addEventListener('keydown', (e) => {
-  const row = e.target.closest('[data-call]');
+  const row = e.target.closest('[data-row]');
   if (row && (e.key === 'Enter' || e.key === ' ')) {
     e.preventDefault();
-    select({ kind: 'call', label: row.dataset.call });
+    select({ kind: 'row', id: row.dataset.row });
   }
 });
 $('run-files').addEventListener('click', (e) => {

@@ -1,7 +1,7 @@
 """Engine of a runbook run: state in state.json, a text log in progress.md, next actions on stdout.
 
-A runbook's flow.py declares inputs, executors and steps with this module, writes the flow as one generator under
-@rb.flow, and ends with rb.main(). The orchestrator then talks to flow.py:
+A runbook's flow.py declares inputs, executors and the steps they run with this module, writes the flow as one
+generator under @rb.flow, and ends with rb.main(). The orchestrator then talks to flow.py:
 
     flow.py <run> start '<given inputs as JSON>'   new run: creates the directory, prints what to launch
     flow.py <run> reply <call> '<reply JSON>'      a step finished: records the reply, prints what follows
@@ -18,7 +18,8 @@ declares reply fields. One argument may be `-` to read it from stdin, for text w
 
 Source: https://github.com/agent-runbooks/skills/tree/main/skills/agent-runbook-authoring
 Each release is tagged agent-runbook-authoring/v<__version__>. Changes to the flow.py API: CHANGELOG.md there.
-From 1.4.4 each release is also on PyPI as agent-runbooks, imported as agent_runbooks.
+From 1.4.4 each release is also on PyPI as agent-runbooks. From 2.0.0 this file is agent_runbooks.py, so flow.py
+imports agent_runbooks the same way from a copy next to it and from the package.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import sys
 
 # Before the other imports, so an older Python stops here with a message and not on a missing name.
 if sys.version_info < (3, 9):
-    sys.exit(f'runbook.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
+    sys.exit(f'agent_runbooks.py needs Python 3.9 or newer; {sys.executable} is {sys.version.split()[0]}')
 
 import inspect
 import json
@@ -37,6 +38,7 @@ import os
 import re
 import shlex
 import traceback
+import weakref
 from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -110,7 +112,7 @@ class Call:
 
     step: Step | HumanStep
     inputs: dict[str, Any]
-    executor: str | None = None
+    executor: Executor | str | None = None
 
 
 Request: TypeAlias = 'Call | Parallel | Foreach'
@@ -119,8 +121,9 @@ ItemBody: TypeAlias = 'Callable[[Context, SimpleNamespace], Generator[Request, A
 FlowFunction = TypeVar('FlowFunction', bound=Callable[[Context], Generator[Any, Any, End]])
 OnItemFailure = Literal['fail', 'skip']
 
-# Names on a result the engine sets: a reply field or a branch key cannot take them.
-RESERVED = ('id', 'files', 'status', 'reason', 'choice')
+# Keys of the reply JSON beside the fields: a step's reply field cannot take them, nor `choice` a human step's.
+RESERVED = ('status', 'reason')
+RESERVED_HUMAN = (*RESERVED, 'choice')
 # Step, group and item names: they are parts of an address, where / # @ [ ] have a meaning.
 NAME = re.compile(r'[A-Za-z0-9_.-]+')
 
@@ -156,8 +159,6 @@ def parallel(name: str, /, **branches: Call | Chain) -> Parallel:
     if not branches:
         raise FlowError(f'{where} has no branches')
     for key, branch in branches.items():
-        if key in RESERVED:
-            raise FlowError(f'{where}: branch {key!r} is reserved: {", ".join(RESERVED)} are attributes of a result')
         _check_name(key, f'{where}: branch {key!r}')
         if not isinstance(branch, Call) and not inspect.isgeneratorfunction(branch):
             raise FlowError(f'{where}: branch {key!r} is {branch!r}, neither a step call nor a generator function')
@@ -181,7 +182,7 @@ def foreach(
     (ctx, item) whose return value is the item's reply, or a step call. At most max_concurrent items run at once.
     on_item_failure: 'fail' starts no new item after a failed one and fails the foreach once the running ones
     end; 'skip' keeps the failure as the item's outcome and goes on. The yield returns once every item has ended,
-    with `items`: key, status, reply, reason and files of each, in the order of the file.
+    with `items`: key, status, reply and reason of each, in the order of the file.
     """
     where = f'foreach({name!r})'
     _check_name(name, where)
@@ -204,47 +205,84 @@ def _check_name(name: Any, where: str) -> None:
         raise FlowError(f'{where}: the name must be letters, digits, _ . -')
 
 
-# The results a yield returns. Their attributes are the flow's to read; the engine keeps no methods on them, so a
-# reply field can take any name but the reserved ones.
+# The results a yield returns. Their attributes are the flow's to read, and nothing of the engine's is among them:
+# the address and the files of a result are kept apart, read through address() and files().
 
 
 class StepResult(SimpleNamespace):
-    """A done call: the reply's fields as attributes, `choice` for a human step, its address as `id`, and `files`,
-    name to path, what the launch wrote."""
-
-    id: str
-    files: dict[str, str]
+    """A done call: the reply's fields as attributes, and `choice` for a human step."""
 
 
 class ParallelResult(SimpleNamespace):
-    """A done parallel: one attribute per branch key, and its address as `id`."""
-
-    id: str
+    """A done parallel: one attribute per branch key."""
 
 
 class ForeachResult(SimpleNamespace):
-    """A done foreach: `items` in the order of the file, its address as `id`, and its index in `files`."""
+    """A done foreach: `items` in the order of the file. Its files hold its index."""
 
-    id: str
-    files: dict[str, str]
     items: list[ItemResult]
 
 
 class ItemResult(SimpleNamespace):
-    """One item of a foreach: key, status ('done', 'failed', 'cancelled' or 'not_started'), reply, reason, files."""
+    """One item of a foreach: key, status ('done', 'failed', 'cancelled' or 'not_started'), reply, reason."""
 
     key: str
     status: str
     reply: Any
     reason: str | None
+
+
+Result: TypeAlias = 'StepResult | ParallelResult | ForeachResult | ItemResult'
+RESULTS = (StepResult, ParallelResult, ForeachResult, ItemResult)
+
+
+@dataclass(frozen=True)
+class Origin:
+    """What the engine knows of a result beside its attributes: the call's address and what it wrote."""
+
+    address: str
     files: dict[str, str]
 
 
-def _result_fields(result: StepResult) -> dict[str, Any]:
-    return {k: v for k, v in vars(result).items() if k not in ('id', 'files')}
+# By id() of the result: an attribute of any name stays the flow's. A result's finalizer drops its entry.
+_ORIGINS: dict[int, Origin] = {}
+R = TypeVar('R', bound=SimpleNamespace)
+
+
+def _result(cls: type[R], attributes: dict[str, Any], address: str, files: dict[str, str] | None = None) -> R:
+    result = cls(**attributes)
+    _ORIGINS[id(result)] = Origin(address, dict(files or {}))
+    weakref.finalize(result, _ORIGINS.pop, id(result), None)
+    return result
+
+
+def _origin(result: Any, function: str) -> Origin:
+    origin = _ORIGINS.get(id(result)) if isinstance(result, RESULTS) else None
+    if origin is None:
+        raise TypeError(f'{function}() takes what a yield returned or an item of a foreach, got {result!r}')
+    return origin
+
+
+def files(result: Result) -> dict[str, str]:
+    """The files of a result, name to path: what a step's launch wrote, what the human's words went to, the index
+    of a foreach, the files of an item's latest done launches. Empty for a parallel."""
+    return dict(_origin(result, 'files').files)
+
+
+def address(result: Result) -> str:
+    """The address of the call a result is from, such as main/review#2 or main/sites[a]."""
+    return _origin(result, 'address').address
 
 
 # ---------- declarations ----------
+
+
+@dataclass(frozen=True)
+class Executor:
+    """An executor declared with Runbook.executor; steps and calls refer to it by this value."""
+
+    name: str
+    description: str
 
 
 @dataclass(eq=False)
@@ -252,7 +290,7 @@ class Step:
     """A step an executor runs. Fields mirror the parameters of Runbook.step. Calling it is a call for the flow."""
 
     name: str
-    executor: str
+    executor: Executor
     prompt: str
     inputs: list[str | tuple[str, Any]] = field(default_factory=list)
     reply: dict[str, Any] = field(default_factory=dict)
@@ -260,8 +298,9 @@ class Step:
     writes: list[str] = field(default_factory=list)
     side_effects: str | None = None
 
-    def __call__(self, *, executor: str | None = None, **inputs: Any) -> Call:
-        """A launch of this step. executor: a declared executor for this call. inputs: more lines of its message."""
+    def __call__(self, *, executor: Executor | str | None = None, **inputs: Any) -> Call:
+        """A launch of this step. executor: another executor for this call, or the name of a declared one, such as
+        one a run input picks. inputs: more lines of its message."""
         return Call(self, inputs, executor)
 
 
@@ -426,7 +465,7 @@ class RunState:
             data = json.load(f)
         if data.get('format') != FORMAT:
             raise CommandError(
-                f'{path} is format {data.get("format", 1)}, and runbook.py {__version__} reads format {FORMAT}. '
+                f'{path} is format {data.get("format", 1)}, and agent_runbooks.py {__version__} reads format {FORMAT}. '
                 'A run of another engine version does not load: start a new run.'
             )
         state = cls(runbook=data['runbook'], status=data['status'], inputs=data['inputs'], calls=[])
@@ -781,7 +820,7 @@ class Replay:
             return Pending()
         if record.status == 'done':
             frame.files.update(record.files)
-            return Returned(StepResult(**{**record.reply, 'id': address, 'files': dict(record.files)}))
+            return Returned(_result(StepResult, record.reply, address, record.files))
         side_effects = isinstance(step, Step) and step.side_effects
         if record.note == NOTE_RELAUNCHED or (record.status == 'interrupted' and not side_effects):
             return Pending(proposals=[self._propose(call, address, frame, record.attempt + 1)])
@@ -794,8 +833,9 @@ class Replay:
         if isinstance(step, HumanStep):
             record = CallRecord(id=address, attempt=attempt, kind='human', step=step.name, status='waiting')
             return Proposal(record, question=self.substitute(step.question, frame))
-        if call.executor is not None and call.executor not in self.rb.executor_specs:
-            raise FlowError(f'`{address}`: executor {call.executor!r} is not declared')
+        executor = step.executor if call.executor is None else self.rb.find_executor(call.executor)
+        if executor is None:
+            raise FlowError(f'`{address}`: executor {call.executor!r} is not declared in this flow.py')
         inputs: dict[str, Any] = {}
         passed: dict[str, str | None] = {}
         for key, value in call.inputs.items():
@@ -810,7 +850,7 @@ class Replay:
             kind='step',
             step=step.name,
             status='running',
-            executor=call.executor or step.executor,
+            executor=executor.name,
             inputs=inputs,
             files_in={**files_in, **passed},
             schema=reply_schema(step.reply),
@@ -851,7 +891,7 @@ class Replay:
             return pending
         self._update(record, 'done', branches={key: 'done' for key in outcomes})
         results = {key: outcome.value for key, outcome in outcomes.items() if isinstance(outcome, Returned)}
-        return Returned(ParallelResult(**results, id=address))
+        return Returned(_result(ParallelResult, results, address))
 
     def _foreach(self, group: Foreach, address: str, frame: Frame) -> Outcome:
         record = self.latest.get(address)
@@ -922,16 +962,20 @@ class Replay:
         self._update(record, 'done', index=rows)
         index_path = self.files.index_path(record)
         frame.files[index_name] = index_path
-        return Returned(
-            ForeachResult(id=address, files={index_name: index_path}, items=[ItemResult(**row) for row in rows])
-        )
+        results = [
+            _result(
+                ItemResult, {k: v for k, v in row.items() if k != 'files'}, f'{address}[{row["key"]}]', row['files']
+            )
+            for row in rows
+        ]
+        return Returned(_result(ForeachResult, {'items': results}, address, {index_name: index_path}))
 
     def _item(self, group: Foreach, item: dict[str, Any], record: CallRecord, frame: Frame) -> Outcome:
         item_frame = Frame(record.id, frame, item)
         if isinstance(group.body, Call):
             outcome = self._yielded(group.body, item_frame)
             if isinstance(outcome, Returned):
-                outcome = Returned(_result_fields(outcome.value))
+                outcome = Returned(dict(vars(outcome.value)))
         else:
             outcome = self._drive(group.body, (self.ctx, SimpleNamespace(**item)), item_frame)
         if isinstance(outcome, Returned) and not _is_json(outcome.value):
@@ -1007,9 +1051,6 @@ def _is_json(value: Any) -> bool:
     return False
 
 
-RESULTS = (StepResult, ParallelResult, ForeachResult, ItemResult)
-
-
 def _holds_result(value: Any) -> bool:
     if isinstance(value, RESULTS):
         return True
@@ -1018,24 +1059,22 @@ def _holds_result(value: Any) -> bool:
     return isinstance(value, (list, tuple)) and any(_holds_result(v) for v in value)
 
 
-def _pass(address: str, key: str, value: Any, inputs: dict[str, Any], files: dict[str, str | None]) -> None:
+def _pass(address: str, key: str, value: Any, inputs: dict[str, Any], reads: dict[str, str | None]) -> None:
     """A keyword argument of a call as lines of its message: a JSON value as `key: value`; a result, or a dict or
     list holding results, as `key.<path>: <field>` and `read key.<path>/<name>: <file>`."""
-    if isinstance(value, StepResult):
-        inputs.update({f'{key}.{name}': v for name, v in _result_fields(value).items()})
-        files.update({f'{key}/{name}': path for name, path in value.files.items()})
-    elif isinstance(value, ForeachResult):
-        files.update({f'{key}/{name}': path for name, path in value.files.items()})
-    elif isinstance(value, ItemResult):
-        inputs.update({f'{key}.{name}': v for name, v in vars(value).items() if name != 'files'})
-        files.update({f'{key}/{name}': path for name, path in value.files.items()})
+    if isinstance(value, (StepResult, ItemResult)):
+        inputs.update({f'{key}.{name}': v for name, v in vars(value).items()})
+    if isinstance(value, (StepResult, ForeachResult, ItemResult)):
+        origin = _ORIGINS.get(id(value))
+        if origin is None:
+            raise FlowError(f'`{address}`: input {key!r} is {value!r}, not a result a yield returned')
+        reads.update({f'{key}/{name}': path for name, path in origin.files.items()})
     elif isinstance(value, ParallelResult):
         for branch, v in vars(value).items():
-            if branch != 'id':
-                _pass(address, f'{key}.{branch}', v, inputs, files)
+            _pass(address, f'{key}.{branch}', v, inputs, reads)
     elif _holds_result(value):
         for part, v in value.items() if isinstance(value, dict) else enumerate(value):
-            _pass(address, f'{key}.{part}', v, inputs, files)
+            _pass(address, f'{key}.{part}', v, inputs, reads)
     elif _is_json(value):
         inputs[key] = value
     else:
@@ -1285,10 +1324,11 @@ class Renderer:
         record = proposal.record
         step = self.rb.steps[record.step]
         assert isinstance(step, Step)
+        executor = self.rb.executors.get(record.executor or '')
         headline = TEXT['launch'].format(
             label=record.label,
             executor=record.executor,
-            spec=self.rb.executor_specs.get(record.executor or '', TEXT['missing_executor']),
+            spec=executor.description if executor else TEXT['missing_executor'],
         )
         if step.side_effects:
             headline += TEXT['launch_side_effects'].format(side_effects=step.side_effects)
@@ -1391,7 +1431,7 @@ class Runbook:
         self.steps: dict[str, AnyStep] = {}
         self.flow_fn: Callable[[Context], Generator[Any, Any, Any]] | None = None
         self.input_spec: dict[str, Any] = {}
-        self.executor_specs: dict[str, str] = {}
+        self.executors: dict[str, Executor] = {}
         self.here = os.path.dirname(os.path.abspath(sys.argv[0]))
         # Set by `reply` when it asks the executor to correct its reply; printed before what the run does next.
         self._correcting: tuple[CallRecord, str] | None = None
@@ -1407,15 +1447,32 @@ class Runbook:
         """Inputs of a run. A type (str, int, bool) is required; a value is a default of its type."""
         self.input_spec = spec
 
-    def executor(self, name: str, description: str) -> None:
-        """What the orchestrator launches for this executor name: model, tool, effort, cwd. Printed with every launch."""
-        self.executor_specs[name] = description
+    def executor(self, name: str, description: str) -> Executor:
+        """An executor for steps to take. description: what the orchestrator launches for it, such as model, tool,
+        effort, cwd; printed with every launch. The name is what state.json and the launches record."""
+        if not isinstance(name, str) or not NAME.fullmatch(name):
+            raise ValueError(f'executor {name!r}: the name must be letters, digits, _ . -')
+        if name in self.executors:
+            raise ValueError(f'executor {name!r} is already declared')
+        if not isinstance(description, str):
+            raise TypeError(f'executor {name!r}: description takes a string, got {description!r}')
+        executor = Executor(name, description)
+        self.executors[name] = executor
+        return executor
+
+    def find_executor(self, executor: Executor | str) -> Executor | None:
+        """This Runbook's executor, given as itself or by its name; None for a foreign one or an undeclared name."""
+        if isinstance(executor, str):
+            return self.executors.get(executor)
+        if isinstance(executor, Executor) and self.executors.get(executor.name) is executor:
+            return executor
+        return None
 
     def step(
         self,
         name: str,
         *,
-        executor: str,
+        executor: Executor,
         prompt: str,
         inputs: Iterable[str | tuple[str, Any]] = (),
         reply: dict[str, Any] | None = None,
@@ -1425,7 +1482,7 @@ class Runbook:
     ) -> Step:
         """A step an executor runs. The flow launches it with `r = yield step(...)`.
 
-        executor: a name declared with executor(); a call can pick another one, `step(executor='light')`.
+        executor: what executor() returned; a call can pick another one, `step(executor=light)`.
         inputs: names taken from the run's inputs, or (key, value) pairs passed as they are.
         reply: {field: type or JSON Schema of the field} the executor's JSON carries beyond status. The engine
         writes the reply's schema for the executor from it, and checks each field's presence and type.
@@ -1437,8 +1494,8 @@ class Runbook:
         side_effects: what the step does outside the tree; such a step is never relaunched without the human.
         """
         self._check_declaration(name, inputs=inputs, reads=reads, writes=writes)
-        if not isinstance(executor, str):
-            raise TypeError(f'step {name!r}: executor is {executor!r}, not the name of a declared executor')
+        if not isinstance(executor, Executor) or self.find_executor(executor) is None:
+            raise TypeError(f'step {name!r}: executor is {executor!r}, not what executor() of this flow.py returned')
         reads, writes = list(reads), list(writes)
         _check_strings(name, 'prompt', [prompt])
         _check_strings(name, 'reads', reads)
@@ -1451,7 +1508,7 @@ class Runbook:
                 isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
             ):
                 raise TypeError(f'step {name!r}: inputs item {item!r} is neither a name nor a (key, value) pair')
-        _check_reply_names(name, reply)
+        _check_reply_names(name, reply, RESERVED)
         step = Step(
             name=name,
             executor=executor,
@@ -1490,7 +1547,7 @@ class Runbook:
         _check_strings(name, 'choices', choices)
         if writes is not None:
             _check_strings(name, 'writes', [writes])
-        _check_reply_names(name, reply)
+        _check_reply_names(name, reply, RESERVED_HUMAN)
         step = HumanStep(name=name, question=question, choices=choices, reply=reply or {}, writes=writes)
         _check_reply_declaration(step)
         self.steps[name] = step
@@ -1546,8 +1603,6 @@ class Runbook:
         problems = []
         if not os.path.exists(os.path.join(self.here, step.prompt)):
             problems.append(f'step {n}: {step.prompt} does not exist')
-        if step.executor not in self.executor_specs:
-            problems.append(f'step {n}: executor {step.executor!r} is not declared')
         for item in step.inputs:
             if isinstance(item, str) and item not in self.input_spec:
                 problems.append(f'step {n}: input {item!r} is not a declared run input')
@@ -1814,11 +1869,11 @@ def _check_strings(step: str, parameter: str, values: Iterable[Any], empty_ok: b
             raise TypeError(f'step {step!r}: {parameter} takes strings, got {value!r}')
 
 
-def _check_reply_names(step: str, reply: dict[str, Any] | None) -> None:
+def _check_reply_names(step: str, reply: dict[str, Any] | None, reserved: tuple[str, ...]) -> None:
     for name in reply or {}:
-        if name in RESERVED:
+        if name in reserved:
             raise ValueError(
-                f'step {step!r}: reply field {name!r} is reserved: {", ".join(RESERVED)} are set by the engine'
+                f'step {step!r}: reply field {name!r} is reserved: {", ".join(reserved)} are keys of the reply JSON'
             )
 
 

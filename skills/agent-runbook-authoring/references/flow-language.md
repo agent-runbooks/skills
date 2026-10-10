@@ -1,19 +1,19 @@
 # Writing flow.py
 
-`flow.py` declares the steps of a runbook in Python, on top of `runbook.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows, and writes the flow as one generator that calls them. `flow.py` is also the command the orchestrator runs: `runbook.py` gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.0; the 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
+`flow.py` declares the steps of a runbook in Python, on top of the engine `agent_runbooks.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows, and imported as `agent_runbooks` either way. It writes the flow as one generator that calls the steps. `flow.py` is also the command the orchestrator runs: the engine gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.0; the 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ```python
 #!/usr/bin/env python3
 """Steps and the flow of runbook-<name>. Run with --help for the commands."""
 
-from runbook import Runbook, StepFailed, end, foreach, parallel
+from agent_runbooks import Runbook, StepFailed, end, files, foreach, parallel
 
 rb = Runbook()
 
-rb.inputs(brief=str, repo=str, coder='main', maxFixRounds=2)
+rb.inputs(brief=str, repo=str, coder='session', maxFixRounds=2)
 
-rb.executor('main', 'the model of the main session, high effort where the tool has one')
-rb.executor(
+session = rb.executor('session', 'the model of the main session, high effort where the tool has one')
+other = rb.executor(
     'other',
     'a model from another vendor, through the tool that launches it, working directory = repo',
 )
@@ -22,7 +22,7 @@ rb.executor(
 
 implement = rb.step(
     'implement',
-    executor='main',
+    executor=session,
     prompt='prompts/01-implement.md',
     reads=['brief.md', 'working tree'],
     writes=['implement.md'],
@@ -30,7 +30,7 @@ implement = rb.step(
 
 review = rb.step(
     'review',
-    executor='main',
+    executor=session,
     prompt='prompts/02-review.md',
     reads=['implement.md', 'fixes.index', 'working tree'],
     writes=['review.md'],
@@ -39,7 +39,7 @@ review = rb.step(
 
 triage = rb.step(
     'triage',
-    executor='main',
+    executor=session,
     prompt='prompts/03-triage.md',
     writes=['triage.md', 'fixes.json'],
     reply={'to_fix': int},
@@ -47,7 +47,7 @@ triage = rb.step(
 
 fix = rb.step(
     'fix',
-    executor='main',
+    executor=session,
     prompt='prompts/04-fix.md',
     reads=['triage.md', 'rounds.md', 'working tree'],
     writes=['fix.md'],
@@ -65,7 +65,7 @@ ask_rounds = rb.human(
 def second_review(ctx):
     """A branch: another vendor's review, or the main model's when that tool cannot run here."""
     try:
-        return (yield review(executor='other'))
+        return (yield review(executor=other))
     except StepFailed:
         return (yield review())
 
@@ -77,7 +77,7 @@ def main(ctx):
     while True:
         reviews = yield parallel('reviews', a=review(), b=second_review)
         if reviews.a.findings + reviews.b.findings == 0:
-            return end('ready', f'read {reviews.a.files["review.md"]}')
+            return end('ready', f'read {files(reviews.a)["review.md"]}')
         t = yield triage(reviews=reviews, round=used + 1)
         if t.to_fix == 0:
             return end('ready', 'read <run>/triage.md')
@@ -101,7 +101,7 @@ The inputs of a run, by name. A type (`str`, `int`, `bool`) is a required input.
 
 ## `rb.executor(name, description)`
 
-What the orchestrator launches for an executor name. The engine prints ``launch step `<call>` as a new subagent, executor `<name>`: <description>`` with every launch, so the orchestrator never looks it up, and the Execution rules say a subagent is launched through the orchestrator's own subagent tool unless the description names another. The description therefore holds only what differs: model, effort, working directory, another tool. Name a tool by what it is, with a harness's name for it in brackets at most: a description that says only `the Agent tool` runs in one harness. A step's `executor` is a declared name, and a call picks another declared one with `executor=`: `review(executor='other')`, `implement(executor=ctx.inputs.coder)`.
+Declares an executor and returns it for the steps to take: `coder = rb.executor('coder', '…')`. Its name is what `state.json`, the log and the launches record; it is letters, digits, `_ . -`, and a malformed or taken one raises `ValueError`. The description is what the orchestrator launches for it. The engine prints ``launch step `<call>` as a new subagent, executor `<name>`: <description>`` with every launch, so the orchestrator never looks it up, and the Execution rules say a subagent is launched through the orchestrator's own subagent tool unless the description names another. The description therefore holds only what differs: model, effort, working directory, another tool. Name a tool by what it is, with a harness's name for it in brackets at most: a description that says only `the Agent tool` runs in one harness. A step takes the executor, so it is declared before the steps that use it. A call picks another with `executor=`: `review(executor=other)`, or by name when a run input picks it, `implement(executor=ctx.inputs.coder)`.
 
 ## `rb.step(name, ...)`
 
@@ -111,12 +111,12 @@ Names of steps, groups and branch keys are letters, digits, `_ . -`, since they 
 
 Collection parameters `inputs`, `reads`, `writes` and `choices` take iterables, such as lists or tuples. A lone string raises `TypeError` naming the step and parameter. `rb.human(writes=...)` takes one file name as a string.
 
-- `executor`: a name declared with `rb.executor`.
+- `executor`: what `rb.executor` of this `flow.py` returned. A name, or an executor of another `Runbook`, raises `TypeError`.
 - `prompt`: the step's prompt file, relative to the runbook directory.
 - `inputs`: what the launch message carries beyond `repo`, `run` and the files. A string is the name of a run input, passed with its value. A `(key, value)` pair is passed as it is. A call adds lines of its own, see the flow below.
-- `reply`: the fields the executor's JSON carries beyond `status`, each with a type, `{'passed': bool}`, or with the field's JSON Schema, `{'findings': {'type': 'integer', 'description': '…'}}`. A type is shorthand for `{'type': …}`: `bool`, `int`, `float`, `str`, `list`, `dict`. Anything else raises `TypeError` at declaration, and a field named `id`, `files`, `status`, `reason` or `choice` raises `ValueError`: those are the engine's attributes on a result. From the fields the engine writes the reply's schema for each launch to `<run>/schemas/<NN>-<step>.json`, and the launch message gives its path as `reply schema: <path>`: the executor reads it, and a harness that can hold a subagent to a schema is given it. The schema is one closed object with every property required, `status`, `reason` and the fields, each field allowing null next to its own values: the form such harnesses accept for scalar fields. A `list` or `dict` shorthand gives an open array or object, which a harness that enforces schemas refuses: give such a field its full schema, `items` and closed `properties` included, or better, put the content in a file. A field's schema stands alone, without `$ref`. Its description says which go with which status, and the engine drops the nulls before recording. The flow reads the fields as `r.field`. A reply that is not one JSON object with a known `status`, or a `done` reply that lacks one of the fields or carries the wrong `type`, goes back to its executor once: `flow.py` prints a correction that the orchestrator sends into the executor's session, asking for the JSON only and not for the step's work again. A second such reply, or an executor that cannot be asked again, is recorded as `failed`, `invalid reply: <what is wrong>`, and reaches the flow as a failure. The check reads the schema written for that launch, not the current declaration. The engine checks nothing but the type: `enum`, `minimum` and the rest bind only where the harness enforces the schema, so the flow handles a value outside them. Keep to `type`, `enum` and `description` unless you know the harnesses the runbook runs in: some refuse a schema with `minimum` or `minLength` in it.
+- `reply`: the fields the executor's JSON carries beyond `status`, each with a type, `{'passed': bool}`, or with the field's JSON Schema, `{'findings': {'type': 'integer', 'description': '…'}}`. A type is shorthand for `{'type': …}`: `bool`, `int`, `float`, `str`, `list`, `dict`. Anything else raises `TypeError` at declaration, and a field named `status` or `reason` raises `ValueError`: those are keys of the reply JSON. Any other name works, `id` and `files` included. From the fields the engine writes the reply's schema for each launch to `<run>/schemas/<NN>-<step>.json`, and the launch message gives its path as `reply schema: <path>`: the executor reads it, and a harness that can hold a subagent to a schema is given it. The schema is one closed object with every property required, `status`, `reason` and the fields, each field allowing null next to its own values: the form such harnesses accept for scalar fields. A `list` or `dict` shorthand gives an open array or object, which a harness that enforces schemas refuses: give such a field its full schema, `items` and closed `properties` included, or better, put the content in a file. A field's schema stands alone, without `$ref`. Its description says which go with which status, and the engine drops the nulls before recording. The flow reads the fields as `r.field`. A reply that is not one JSON object with a known `status`, or a `done` reply that lacks one of the fields or carries the wrong `type`, goes back to its executor once: `flow.py` prints a correction that the orchestrator sends into the executor's session, asking for the JSON only and not for the step's work again. A second such reply, or an executor that cannot be asked again, is recorded as `failed`, `invalid reply: <what is wrong>`, and reaches the flow as a failure. The check reads the schema written for that launch, not the current declaration. The engine checks nothing but the type: `enum`, `minimum` and the rest bind only where the harness enforces the schema, so the flow handles a value outside them. Keep to `type`, `enum` and `description` unless you know the harnesses the runbook runs in: some refuse a schema with `minimum` or `minLength` in it.
 - `side_effects`: what the step does outside the tree and `<run>`: `'commit'`, `'PR comment'`. Such a step is never relaunched by the engine alone. Its `failed` or `blocked` reply, and its interruption, do not reach the flow: `flow.py` asks for the human's yes first, and `relaunch` opens the next attempt.
-- `writes`: names of the files the step writes, `['checks.md']`. Each launch writes its own file, `<run>/<NN>-checks.md`, `NN` being its record's place in `state.json`: `02-checks.md`, then `04-checks.md` after a fix. Groups and items take places too, so the numbers have gaps where a group opened. Nothing is overwritten, and the run directory lists in the order things happened. The launch message gives the path as `write checks.md: <path>`. A declared file the launch did not write is not in its result's `files`, nor in an index, and a later `reads` of the name gets the latest file that was written; the reply's line in `progress.md` says `did not write checks.md`.
+- `writes`: names of the files the step writes, `['checks.md']`. Each launch writes its own file, `<run>/<NN>-checks.md`, `NN` being its record's place in `state.json`: `02-checks.md`, then `04-checks.md` after a fix. Groups and items take places too, so the numbers have gaps where a group opened. Nothing is overwritten, and the run directory lists in the order things happened. The launch message gives the path as `write checks.md: <path>`. A declared file the launch did not write is not in `files(r)` of its result, nor in an index, and a later `reads` of the name gets the latest file that was written; the reply's line in `progress.md` says `did not write checks.md`.
 - `reads`: names of the files the step reads. Another step's output is passed as the latest such file in the calling generator's scope, `read checks.md: <path>`, or as absent, `read checks.md: absent, no earlier step wrote it`; a step that reads its own name gets its previous pass in that scope. The scope is under Files. A step inside a group does not see its pass from an earlier group, which sits in that group's history: the flow passes it in, `a=review(previous=reviews.a)`, and the step reads `read previous/review.md: <path>`. A name no step writes is an input file under `<run>` and is passed as it is. `'working tree'` is not passed; it is there for the reader of `flow.py`.
 
 ## `rb.human(name, ...)`
@@ -125,7 +125,7 @@ A question to the human. No executor. `rb.human` returns the step, and the flow 
 
 - `question`: the text, with the choices in it if there are any. `<run>/<name>` in it becomes the latest file of that name in the calling generator's scope, as for `reads`, and any other `<run>` the run directory.
 - `choices`: the strings `a.choice` is one of. `flow.py` prints them with the question, the orchestrator maps the answer to one of them, and `answer` accepts it case aside. Without `choices` the step takes free text and `a.choice` is the words whole.
-- `reply`: fields the orchestrator takes from the human's words next to the choice, declared as a step's `reply` is: `{'rounds': {'type': 'integer', 'default': 1, 'description': 'how many more fix rounds'}}`. `flow.py` prints each with its type and description, and `answer` then takes a JSON object, `'{"choice": "more rounds", "rounds": 2}'`. The flow reads them as `a.rounds`. A field the human did not give is its schema's `default`, or `None`. Only the `type` is checked, and a wrong one is refused, not recorded.
+- `reply`: fields the orchestrator takes from the human's words next to the choice, declared as a step's `reply` is, with `choice` refused next to `status` and `reason`: `{'rounds': {'type': 'integer', 'default': 1, 'description': 'how many more fix rounds'}}`. `flow.py` prints each with its type and description, and `answer` then takes a JSON object, `'{"choice": "more rounds", "rounds": 2}'`. The flow reads them as `a.rounds`. A field the human did not give is its schema's `default`, or `None`. Only the `type` is checked, and a wrong one is refused, not recorded.
 - `writes`: a file name the engine writes the human's verbatim words to, numbered like a step's output, for the steps that follow. The words are kept in `state.json` and the log either way: `answer <call> '<choice>' '<the words>'`, or `-` to read the words from stdin.
 
 ## `@rb.flow` and `yield`
@@ -141,15 +141,15 @@ So the generator computes from `ctx` and what its yields return, and acts on the
 - The clock, a directory listing, a file it reads, the order of a `set`, which differs between processes, or module-level state it changes gives another answer on the next command, and the replay goes another way than the run went.
 - A branch on what a step found is a reply field: the field is checked against the step's schema and recorded with the call, while a file is read again on every command and can change on disk in between. The engine does the same for the `over` of a foreach, see Groups.
 
-- `r = yield step(...)` launches the step and returns once its reply is `done`. `r` has the reply's fields as attributes, `r.findings`, and `r.choice` for a human step; `r.id`, the call's address; and `r.files`, each name the launch wrote with its path.
-- Keyword arguments of a call are lines of its launch message. A JSON value is `<key>: <value>`: `round=used + 1` is `round: 1`. A result, or a dict or list holding results, passes its fields and files, see Files. `executor=` picks a declared executor for this call. Any other value stops the command as a defect of `flow.py`.
+- `r = yield step(...)` launches the step and returns once its reply is `done`. `r` has the reply's fields as attributes, `r.findings`, and `r.choice` for a human step, and nothing else. What the engine knows of the call is read through two functions: `files(r)`, each name the launch wrote with its path, and `address(r)`, the call's address. Both take every result a yield returns and an item of a foreach, and raise `TypeError` for anything else.
+- Keyword arguments of a call are lines of its launch message. A JSON value is `<key>: <value>`: `round=used + 1` is `round: 1`. A result, or a dict or list holding results, passes its fields and files, see Files. `executor=` picks another executor for this call: what `rb.executor` returned, or the name of a declared one. An undeclared name, or any other value, stops the command as a defect of `flow.py`.
 - A `failed` or `blocked` reply is thrown into the generator at that `yield` as `StepFailed`: `e.id` is the call's address, `e.status` and `e.reason` are the reply's, `e.reply` is the whole reply. A `try`/`except StepFailed` around the `yield` handles it. A failure no generator handles ends the run `failed`, and the human is pointed at `progress.md`. A generator raises `StepFailed('<reason>')` itself to fail its branch or item.
-- `return end('status', 'read <run>/checks.md')` ends the run. The second argument is what `flow.py` tells the orchestrator to report, with `<run>/checks.md` replaced by the latest `checks.md` in `main`'s scope and any other `<run>` by the run directory. A file written inside a group is not in that scope: name it through the result, `f'read {reviews.a.files["review.md"]}'`. Returning anything else from `main` is a defect of `flow.py`. Describe every status under End of run in `SKILL.md`, `failed` included.
+- `return end('status', 'read <run>/checks.md')` ends the run. The second argument is what `flow.py` tells the orchestrator to report, with `<run>/checks.md` replaced by the latest `checks.md` in `main`'s scope and any other `<run>` by the run directory. A file written inside a group is not in that scope: name it through the result, `f'read {files(reviews.a)["review.md"]}'`. Returning anything else from `main` is a defect of `flow.py`. Describe every status under End of run in `SKILL.md`, `failed` included.
 - A loop is a `while` with its budget in local variables: `budget, used = ctx.inputs.maxFixRounds, 0`, `used += 1` per round, `budget += a.rounds` when the human grants more. A retry is the same around a `try`/`except StepFailed`, counting its failures. Every loop has a budget and a way out: a human step, or a `return end(...)`.
 
 ## Groups
 
-`reviews = yield parallel('reviews', a=review(), b=second_review)` launches the branches together and returns once every branch is done. A branch is a step call, or a generator function `(ctx)`, a chain of calls whose `return` value is the branch's result. The result has one attribute per branch key: `reviews.a` is the call's result, `reviews.b` what `second_review` returned. A branch key is not `id`, `files`, `status`, `reason` or `choice`. Branches read what the generator around them wrote before the group. A branch that changes the working tree runs in a group where no other branch reads the tree; branches that do not touch it may run next to it.
+`reviews = yield parallel('reviews', a=review(), b=second_review)` launches the branches together and returns once every branch is done. A branch is a step call, or a generator function `(ctx)`, a chain of calls whose `return` value is the branch's result. The result has one attribute per branch key: `reviews.a` is the call's result, `reviews.b` what `second_review` returned. The result has nothing else on it, so any branch key the naming rule allows works. Branches read what the generator around them wrote before the group. A branch that changes the working tree runs in a group where no other branch reads the tree; branches that do not touch it may run next to it.
 
 `done = yield foreach('fixes', over='fixes.json', body=fix(), max_concurrent=1, on_item_failure='skip')` runs the body for each item of the JSON array in the file `over`, and returns once every item has ended.
 
@@ -157,7 +157,7 @@ So the generator computes from `ctx` and what its yields return, and acts on the
 - `body`: a step call, whose reply is the item's reply, or a generator function `(ctx, item)` that reads the item's fields as `item.<field>` and whose `return` value, a JSON value, is the item's reply. A step launched in an item gets the fields of the innermost item as lines of its message, `key: f1`, `title: off by one`.
 - `max_concurrent`: how many items run at once, 4 by default. A body that changes the working tree takes 1.
 - `on_item_failure`: `'fail'`, the default, fails the foreach when an item fails. `'skip'` keeps the failure as the item's outcome and goes on.
-- The result has `items` in the order of the file, each with `key`, `status` (`done` or `failed`), `reply`, `reason`, and `files`, those of the item's latest done launches. Its `files` holds the index, see Files.
+- The result has `items` in the order of the file, each with `key`, `status` (`done` or `failed`), `reply` and `reason`; `files(item)` gives the files of the item's latest done launches. `files(done)` holds the index, see Files.
 
 `max_concurrent` and `max_items` below 1, or another `on_item_failure`, stop the command as a defect of `flow.py` when the foreach is reached.
 
@@ -207,14 +207,14 @@ An interrupted launch, or a relaunch on the human's yes, opens a new attempt of 
 
 ## Files of a run
 
-- `state.json`: format 2. The run's inputs, its status (`running`, `waiting_for_human` or the end status), and `calls`, one record per attempt in the order they were opened: steps and human steps, and the records of parallels, foreaches and items. Each holds `id` (the address), `attempt`, `kind`, `step` and `status`; a launch holds the contract its executor was given, the replies, and the replies that did not pass the check. Written by `runbook.py` only. An engine that reads another format refuses the run, and `start` refuses a directory that holds a `state.json`.
+- `state.json`: format 2. The run's inputs, its status (`running`, `waiting_for_human` or the end status), and `calls`, one record per attempt in the order they were opened: steps and human steps, and the records of parallels, foreaches and items. Each holds `id` (the address), `attempt`, `kind`, `step` and `status`; a launch holds the contract its executor was given, the replies, and the replies that did not pass the check. Written by `agent_runbooks.py` only. An engine that reads another format refuses the run, and `start` refuses a directory that holds a `state.json`.
 - `progress.md`: the inputs and a text log, one line per launch, reply, question, answer and end. Append-only, for humans.
 - The steps' output files, `<NN>-<name>`, the indexes, `<NN>-<name>.index.json`, and the input files under their own names.
-- `schemas/<NN>-<step>.json`: the JSON Schema of each launch's reply. Written by `runbook.py` only.
+- `schemas/<NN>-<step>.json`: the JSON Schema of each launch's reply. Written by `agent_runbooks.py` only.
 
 ## Checking
 
-`python3 flow.py --check` from the runbook directory: a flow is declared, `repo` is an input, every step's executor and every `inputs` name is declared, every prompt file exists, every human step has a question, `prompts/common.md` exists. Declaration mistakes, such as a malformed name, a reserved or untyped reply field or a lone string, raise when `flow.py` is loaded, naming the step and the parameter. Routes are Python and are not checked.
+`python3 flow.py --check` from the runbook directory: a flow is declared, `repo` is an input, every `inputs` name is declared, every prompt file exists, every human step has a question, `prompts/common.md` exists. Declaration mistakes, such as a malformed name, a step's executor given by name, a reserved or untyped reply field or a lone string, raise when `flow.py` is loaded, naming the step and the parameter. Routes are Python and are not checked.
 
 A defect found while the flow runs, such as an exception in a generator, a yield of something that is neither a call nor a group, or a value a call cannot pass, stops the command with `This is a defect in flow.py: report it to the human and stop.` and the command that resumes the run once it is fixed. What the command recorded is kept, so after `flow.py` is fixed, `flow.py <run>` goes on from there.
 

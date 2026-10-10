@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Steps and the flow of runbook-review-loop. Run with --help for the commands."""
 
-from runbook import Runbook, end
+from agent_runbooks import Runbook, end
 
 rb = Runbook()
 
@@ -9,12 +9,12 @@ rb.inputs(brief=str, repo=str, checks='', maxFixRounds=2)
 
 # Two names for one kind of launch, so either role moves to another model by editing one line.
 SUBAGENT = 'general-purpose, on the model of the main session, named explicitly where the tool takes a model'
-rb.executor('coder', SUBAGENT)
-rb.executor('reviewer', SUBAGENT)
+coder = rb.executor('coder', SUBAGENT)
+reviewer = rb.executor('reviewer', SUBAGENT)
 
 implement = rb.step(
     'implement',
-    executor='coder',
+    executor=coder,
     prompt='prompts/01-implement.md',
     inputs=['checks'],
     reads=['brief.md', 'working tree'],
@@ -23,7 +23,7 @@ implement = rb.step(
 
 review = rb.step(
     'review',
-    executor='reviewer',
+    executor=reviewer,
     prompt='prompts/02-review.md',
     inputs=['checks'],
     reads=['brief.md', 'implement.md', 'fix.md', 'review.md', 'working tree'],
@@ -33,7 +33,7 @@ review = rb.step(
 
 fix = rb.step(
     'fix',
-    executor='coder',
+    executor=coder,
     prompt='prompts/03-fix.md',
     inputs=['checks'],
     reads=['brief.md', 'review.md', 'rounds.md', 'working tree'],

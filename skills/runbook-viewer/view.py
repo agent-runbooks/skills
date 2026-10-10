@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Shows a runbook run: a text status, or a page on localhost. Reads the run directory and never writes to it.
 
-    view.py <run> --status       print the text status
+    view.py <run> --status [--tail N]
+                                 print the text status, or only its last N rows
     view.py <run> [--port N] [--idle-minutes N]
                                  serve the page on 127.0.0.1 until interrupted or idle
 
@@ -42,11 +43,21 @@ MARKS = {
     'interrupted': '✗',
     'cancelled': '✗',
     'blocked': '!',
+    'not_started': '·',
 }
 OPEN = ('running', 'waiting')
-# The records that get a line: groups and items have none, the addresses of their calls show the nesting.
 LAUNCHES = ('step', 'human')
+GROUPS = ('parallel', 'foreach')
 WAITING = 'waiting for the human'
+# A group's header counts its branches or items by status, in this order; failed lists their keys.
+COUNTS = (
+    ('done', ('done',)),
+    ('failed', ('failed', 'blocked', 'interrupted')),
+    ('cancelled', ('cancelled',)),
+    ('running', ('running',)),
+    ('waiting', ('waiting',)),
+    ('not started', ('not_started',)),
+)
 STATIC = {
     '/': ('page.html', 'text/html; charset=utf-8'),
     '/marked.umd.js': ('marked.umd.js', 'text/javascript; charset=utf-8'),
@@ -102,9 +113,12 @@ def read_state(run: str) -> dict[str, Any]:
         raise StateUnreadable(f'{STATE}: not a JSON object')
     found = data.get('format', 1)
     if found != FORMAT:
-        engine = f'runbook.py {found}.x' if type(found) is int else 'an unknown engine'
+        # The engine's file was runbook.py through 1.x and is agent_runbooks.py from 2.0.
+        name = 'runbook.py' if found == 1 else 'agent_runbooks.py'
+        engine = f'{name} {found}.x' if type(found) is int else 'an unknown engine'
         raise WrongFormat(
-            f'{path} is format {found}, from {engine}; this viewer reads format {FORMAT}, from runbook.py {FORMAT}.x'
+            f'{path} is format {found}, from {engine}; this viewer reads format {FORMAT}, '
+            f'from agent_runbooks.py {FORMAT}.x'
         )
     if not isinstance(data.get('calls'), list):
         raise StateUnreadable(f'{STATE}: no calls')
@@ -189,9 +203,9 @@ def call_logs(progress: list[str], labels: list[str]) -> dict[str, list[str]]:
 
 
 def snapshot(run: str, now: datetime) -> dict[str, Any]:
-    """What /api/state returns: the state, the files, one entry per attempt with the fields of its status line, its
-    files and log lines, and the run's own files: the inputs, progress.md and the foreach indexes, whatever no attempt
-    was told to write."""
+    """What /api/state returns: the state, the files, the lines of layout() as `rows`, one entry per attempt with its
+    fields, files and log lines, and the run's own files: the inputs, progress.md and the foreach indexes, whatever no
+    attempt was told to write."""
     state = read_state(run)
     files = list_files(run)
     names = {f['name'] for f in files}
@@ -221,6 +235,7 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
         'now': now.strftime(TIME_FORMAT),
         'state': state,
         'files': files,
+        'rows': layout(state),
         'calls': entries,
         'run_files': [f['name'] for f in files if f['name'] != STATE and f['name'] not in claimed],
     }
@@ -235,6 +250,203 @@ def run_file(run: str, name: str) -> str | None:
     if os.path.dirname(path) != root or not os.path.isfile(path):
         return None
     return path
+
+
+# ---------- the tree ----------
+
+
+def owner(address: str, groups: dict[str, str]) -> tuple[str, str] | None:
+    """The innermost of groups, address to kind, that the address sits in, with the key of its branch or item there;
+    None for an address of main outside any group."""
+    found = None
+    for group, kind in groups.items():
+        if address.startswith(group + ('/' if kind == 'parallel' else '[')) and (
+            found is None or len(group) > len(found[0])
+        ):
+            rest = address[len(group) + 1 :]
+            found = (group, rest.split('/', 1)[0] if kind == 'parallel' else rest.split(']', 1)[0])
+    return found
+
+
+def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The lines of the status and of the page's list, in the order things were opened.
+
+    Each is a dict with `type`, `id` (an address), `depth` and `within`, the groups around it, outermost first. A
+    group's header, type 'parallel' or 'foreach', has `header` and `counts`, the header after the name; its branches
+    and items follow it, each followed by its own groups, one level deeper. A row, type 'call', 'branch' or 'item',
+    has `group` (None for a call of main), `label`, `step`, `status`, `mark`, `executor`, `started_at`, `ended_at`,
+    `open`, `note`, and `attempts`: the labels of every launch in it, in the order opened. A call of main shows its
+    latest attempt. A branch or an item shows the launch it waits on, else the one that ended last, or for a branch a
+    group directly in it that ended later; its `step` names that launch or group relative to the row.
+    """
+    kinds: dict[str, str] = {}
+    groups: dict[str, dict[str, Any]] = {}
+    members: dict[str, dict[str, dict[str, Any]]] = {}
+    top: list[tuple[str, str]] = []
+    calls: dict[str, list[dict[str, Any]]] = {}
+
+    def member(place: tuple[str, str]) -> dict[str, Any]:
+        return members[place[0]].setdefault(place[1], {'record': None, 'launches': [], 'groups': []})
+
+    for record in state['calls']:
+        if not isinstance(record, dict) or not isinstance(record.get('id'), str):
+            continue
+        address, kind = record['id'], record.get('kind')
+        place = owner(address, kinds)
+        if kind in GROUPS:
+            kinds[address], groups[address], members[address] = str(kind), record, {}
+            if place is None:
+                top.append(('group', address))
+            else:
+                member(place)['groups'].append(address)
+        elif kind == 'item' and place is not None and kinds[place[0]] == 'foreach':
+            member(place)['record'] = record
+        elif kind in LAUNCHES and place is None:
+            if address not in calls:
+                calls[address] = []
+                top.append(('call', address))
+            calls[address].append(record)
+        elif kind in LAUNCHES:
+            while place is not None:
+                member(place)['launches'].append(record)
+                place = owner(place[0], kinds)
+
+    lines: list[dict[str, Any]] = []
+
+    def add_group(address: str, base: str, depth: int, within: list[str]) -> None:
+        record, kind = groups[address], kinds[address]
+        if kind == 'foreach':
+            items = record.get('items')
+            listed = [
+                i['key'] for i in (items if isinstance(items, list) else []) if isinstance(i, dict) and 'key' in i
+            ]
+            keys = [str(k) for k in dict.fromkeys([*listed, *members[address]])]
+        else:
+            branches = record.get('branches')
+            keys = [
+                str(k) for k in dict.fromkeys([*members[address], *(branches if isinstance(branches, dict) else {})])
+            ]
+        header: dict[str, Any] = {'type': kind, 'id': address, 'depth': depth, 'within': within}
+        lines.append(header)
+        statuses = []
+        for key in keys:
+            found = members[address].get(key) or {'record': None, 'launches': [], 'groups': []}
+            nested = [groups[g] for g in found['groups']] if kind == 'parallel' else []
+            row = _member_row(record, kind, key, found, nested)
+            statuses.append((key, row['status']))
+            lines.append({**row, 'group': address, 'depth': depth, 'within': [*within, address]})
+            for inner in found['groups']:
+                add_group(inner, row['id'], depth + 1, [*within, address])
+        name = address[len(base) + 1 :] if address.startswith(base + '/') else address
+        problem = record.get('problem')
+        counts = _counts(statuses) or ('no items' if kind == 'foreach' else 'no branches')
+        header['counts'] = problem or counts
+        header['header'] = f'{kind} {name}: {header["counts"]}'
+
+    for kind, address in top:
+        if kind == 'group':
+            add_group(address, 'main', 1, [])
+            continue
+        attempts = calls[address]
+        latest = attempts[-1]
+        lines.append(
+            {
+                'type': 'call',
+                'id': address,
+                'depth': 0,
+                'within': [],
+                'group': None,
+                'label': short_label(latest),
+                'step': '',
+                'status': latest.get('status'),
+                'mark': mark(latest),
+                'executor': latest.get('executor'),
+                'started_at': latest.get('started_at'),
+                'ended_at': latest.get('ended_at'),
+                'open': latest.get('status') in OPEN,
+                'note': summary(latest),
+                'attempts': [label(a) for a in attempts],
+            }
+        )
+    return lines
+
+
+def _member_row(
+    group: dict[str, Any], kind: str, key: str, found: dict[str, Any], nested: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The row of a branch of a parallel or an item of a foreach; nested: the records of the groups right in a branch.
+
+    An item's status is its record's, `not_started` without one; a branch's is the parallel's record of it once the
+    parallel has ended, else running or waiting while a launch in it is open, else that of the launch or nested group
+    that ended last: the parallel records how its branches ended only when it closes.
+    """
+    address = f'{group["id"]}/{key}' if kind == 'parallel' else f'{group["id"]}[{key}]'
+    launches: list[dict[str, Any]] = found['launches']
+    item: dict[str, Any] | None = found['record']
+    opened = [c for c in launches if c.get('status') in OPEN]
+    asking = [c for c in opened if c.get('status') == 'waiting']
+    # One fixed format: the latest end is the largest string. Calls in nested branches end out of launch order, and
+    # a group ends with or after the calls in it, so it wins a tie.
+    closed = [c for c in [*launches, *nested] if parse_time(c.get('ended_at')) is not None]
+    last = max(reversed(closed), key=lambda c: str(c['ended_at'])) if closed else None
+    shown = (asking or opened or ([last] if last else launches) or [None])[-1]
+    live = 'waiting' if asking else 'running'
+    branches = group.get('branches')
+    if kind == 'foreach':
+        status = 'not_started' if item is None else live if item.get('status') in OPEN else str(item.get('status'))
+    elif isinstance(branches, dict) and key in branches:
+        status = str(branches[key])
+    elif opened:
+        status = live
+    else:
+        latest = str(shown.get('status')) if shown else ''
+        status = 'failed' if latest == 'blocked' else latest
+    if item is not None and status == 'done':
+        note = reply_text(item.get('reply'))
+    elif item is not None and status == 'failed':
+        note = str(item.get('reason') or '')
+    elif status == 'cancelled':
+        note = 'cancelled'
+    elif shown is not None and shown.get('kind') in GROUPS:
+        note = str(shown.get('problem') or '')
+    else:
+        note = summary(shown) if shown else ''
+    if shown is None:
+        step = 'not started' if status == 'not_started' else ''
+    else:
+        step = shown['id'][len(address) + 1 :] if shown['id'].startswith(address + '/') else str(shown.get('step', ''))
+        attempt = shown.get('attempt', 1)
+        step += f'@{attempt}' if attempt != 1 else ''
+    if item is not None:
+        started, ended = item.get('started_at'), item.get('ended_at')
+    else:
+        starts = [str(c['started_at']) for c in [*launches, *nested] if parse_time(c.get('started_at')) is not None]
+        started = min(starts) if starts else None
+        ended = last.get('ended_at') if last else None
+    return {
+        'type': 'branch' if kind == 'parallel' else 'item',
+        'id': address,
+        'label': key if kind == 'parallel' else f'[{key}]',
+        'step': step,
+        'status': status,
+        'mark': MARKS.get(status, ' '),
+        'executor': (shown or {}).get('executor'),
+        'started_at': started,
+        'ended_at': ended,
+        'open': status in OPEN,
+        'note': note,
+        'attempts': [label(c) for c in launches],
+    }
+
+
+def _counts(members: list[tuple[str, str]]) -> str:
+    """'1 done, 1 failed (billing), 2 running' for (key, status) pairs: the counts that are not zero."""
+    parts = []
+    for name, statuses in COUNTS:
+        keys = [key for key, status in members if status in statuses]
+        if keys:
+            parts.append(f'{len(keys)} {name} ({", ".join(keys)})' if name == 'failed' else f'{len(keys)} {name}')
+    return ', '.join(parts)
 
 
 # ---------- text status ----------
@@ -262,6 +474,18 @@ def duration(call: dict[str, Any], now: datetime) -> str:
     return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
 
 
+def reply_text(reply: Any) -> str:
+    """A reply as the status shows it: an object's fields as k: v, ..., a string as it is, any other value as JSON."""
+    if isinstance(reply, dict):
+        return ', '.join(
+            f'{k}: {reply_text(v) if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
+            for k, v in reply.items()
+        )
+    if reply is None:
+        return ''
+    return reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
+
+
 def summary(call: dict[str, Any]) -> str:
     """The reply fields of a done step, the human's choice and fields, the reason of a failed or blocked one."""
     status = call.get('status')
@@ -274,27 +498,66 @@ def summary(call: dict[str, Any]) -> str:
         return str(reply.get('reason', ''))
     if status != 'done':
         return ''
-    parts = [str(reply.pop('choice'))] if call.get('kind') == 'human' and 'choice' in reply else []
-    parts += [f'{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}' for k, v in reply.items()]
-    return ', '.join(parts)
+    choice = [str(reply.pop('choice'))] if call.get('kind') == 'human' and 'choice' in reply else []
+    return ', '.join([*choice, reply_text(reply)] if reply else choice)
 
 
-def status_text(run: str, now: datetime) -> str:
-    """The text status: a header line, then one aligned line per attempt of a step or a human step."""
-    state = read_state(run)
-    rows = [[mark(c), short_label(c), c.get('executor') or '', duration(c, now), summary(c)] for c in launches(state)]
-    widths = [max((len(row[i]) for row in rows), default=0) for i in range(len(rows[0]))] if rows else []
-    if widths and widths[3]:
-        widths[3] = max(widths[3], 5)
-    lines = [f'{os.path.basename(run)} · {state.get("runbook", "")} · {state.get("status", "")}']
+def _aligned(rows: list[list[str]]) -> list[str]:
+    """Rows of [mark, *columns, duration, note] as lines, each column as wide as its widest cell; empty ones go."""
+    if not rows:
+        return []
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    last = len(widths) - 2
+    if widths[last]:
+        widths[last] = max(widths[last], 5)
+    lines = []
     for row in rows:
-        cells = [row[0]]
-        for i in (1, 2, 3):
-            if widths[i]:
-                cells.append(row[i].rjust(widths[i]) if i == 3 else row[i].ljust(widths[i]))
-        line = f'{cells[0]} ' + '  '.join(cells[1:])
-        lines.append(f'{line}  {row[4]}'.rstrip())
-    return '\n'.join(lines)
+        cells = [
+            row[i].rjust(widths[i]) if i == last else row[i].ljust(widths[i]) for i in range(1, last + 1) if widths[i]
+        ]
+        lines.append(f'{row[0]} {"  ".join(cells)}  {row[-1]}'.rstrip())
+    return lines
+
+
+def status_text(run: str, now: datetime, tail: int = 0) -> str:
+    """The text status: a header line, then the lines of layout(), indented two spaces per depth.
+
+    The calls of main are aligned among themselves, and the rows of each group among themselves. With tail, only the
+    last tail rows show, after a line with the count of those cut and the headers of the groups the first one sits in,
+    each named by its address.
+    """
+    state = read_state(run)
+    entries = layout(state)
+    texts = ['  ' * e['depth'] + e['header'] if e['type'] in GROUPS else '' for e in entries]
+    by_group: dict[str | None, list[int]] = {}
+    for i, e in enumerate(entries):
+        if e['type'] not in GROUPS:
+            by_group.setdefault(e['group'], []).append(i)
+    for indexes in by_group.values():
+        rows = []
+        for i in indexes:
+            e = entries[i]
+            timed = {
+                'status': 'running' if e['open'] else 'done',
+                'started_at': e['started_at'],
+                'ended_at': e['ended_at'],
+            }
+            middle = [e['label'], e['step']] if e['group'] else [e['label']]
+            rows.append([e['mark'], *middle, e['executor'] or '', duration(timed, now), e['note']])
+        for i, line in zip(indexes, _aligned(rows)):
+            texts[i] = '  ' * entries[i]['depth'] + line
+    out = [f'{os.path.basename(run)} · {state.get("runbook", "")} · {state.get("status", "")}']
+    rows_at = [i for i, e in enumerate(entries) if e['type'] not in GROUPS]
+    if 0 < tail < len(rows_at):
+        cut = rows_at[-tail]
+        above = len(rows_at) - tail
+        out.append(f'… {above} {"row" if above == 1 else "rows"} above')
+        # The row a nested group sits under may be cut, so each header names its group by address.
+        context = [e for e in entries[:cut] if e['type'] in GROUPS and e['id'] in entries[cut]['within']]
+        texts = [
+            '  ' * e['depth'] + f'{e["type"]} {e["id"].removeprefix("main/")}: {e["counts"]}' for e in context
+        ] + texts[cut:]
+    return '\n'.join(out + texts)
 
 
 # ---------- server ----------
@@ -390,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='view.py', description='Show a runbook run.')
     parser.add_argument('run', help='a run directory, or a directory of runs')
     parser.add_argument('--status', action='store_true', help='print the text status and exit')
+    parser.add_argument('--tail', type=int, default=0, help='with --status, only the last N rows')
     parser.add_argument('--port', type=int, default=0, help='port to serve on, a free one by default')
     parser.add_argument(
         '--idle-minutes',
@@ -401,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run = find_run(args.run)
         if args.status:
-            print(status_text(run, datetime.now(timezone.utc)))
+            print(status_text(run, datetime.now(timezone.utc), args.tail))
             return 0
         with contextlib.suppress(StateUnreadable):
             read_state(run)
