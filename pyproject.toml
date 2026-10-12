@@ -27,22 +27,22 @@ dev = [
 package = false
 
 [tool.hatch.version]
-path = "skills/agent-runbook-authoring/references/runbook.py"
+path = "skills/agent-runbook-authoring/references/agent_runbooks.py"
 
-# The wheel is the engine alone, renamed so it never shadows or is shadowed by a runbook's own runbook.py.
+# The wheel is the engine alone, the same agent_runbooks.py a runbook can carry as a copy.
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
 
 [tool.hatch.build.targets.wheel.force-include]
-"skills/agent-runbook-authoring/references/runbook.py" = "agent_runbooks.py"
+"skills/agent-runbook-authoring/references/agent_runbooks.py" = "agent_runbooks.py"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["skills/agent-runbook-authoring/references/runbook.py", "skills/agent-runbook-authoring/README.md", "LICENSE"]
+only-include = ["skills/agent-runbook-authoring/references/agent_runbooks.py", "skills/agent-runbook-authoring/README.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 120
-# A byte-for-byte copy of references/runbook.py; CI compares the two.
-extend-exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/runbook.py"]
+# A byte-for-byte copy of references/agent_runbooks.py; CI compares the two.
+extend-exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/agent_runbooks.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
@@ -51,10 +51,6 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 # UP036: the engine and the viewer check the interpreter version on purpose, they run on whatever python3 the machine has.
 ignore = ["E501", "SIM117", "UP036"]
 
-[tool.ruff.lint.per-file-ignores]
-# A flow.py names its next/skip helpers with lambdas, as flow-language.md teaches.
-"**/flow.py" = ["E731"]
-
 [tool.ruff.format]
 quote-style = "single"
 # Code samples in the docs keep their hand layout.
@@ -62,6 +58,6 @@ exclude = ["*.md"]
 
 [tool.pyright]
 include = ["skills"]
-exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/runbook.py"]
+exclude = ["skills/agent-runbook-authoring/references/runbook-review-loop/agent_runbooks.py"]
 pythonVersion = "3.9"
 typeCheckingMode = "standard"

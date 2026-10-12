@@ -5,14 +5,14 @@ A runbook is a skill directory:
 ```
 runbook-<name>/
   SKILL.md          the procedure for the orchestrator: inputs, rules, executors, end of run
-  flow.py           inputs, executors, steps and transitions in Python, and the command the orchestrator runs
-  runbook.py        the engine behind flow.py, copied from this skill
+  flow.py           inputs, executors, steps and the flow in Python, and the command the orchestrator runs
+  agent_runbooks.py the engine behind flow.py, copied from this skill
   prompts/
     common.md       what every executor reads first: project preamble, executor constraints
     <nn>-<step>.md  one file per step: the task, the deliverable, what the reply's fields mean
 ```
 
-Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`runbook.py`](runbook.py) into the runbook directory. An author with several runbooks can take the engine from PyPI instead of copying it, see [The engine from PyPI](#the-engine-from-pypi). `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
+Angle-bracket parts are filled by the author. Three things are copied from this skill as they are, so the runbook runs where this skill is not installed: the "Execution rules" section below into `SKILL.md`, the "Executor constraints" section below into `common.md`, and [`agent_runbooks.py`](agent_runbooks.py) into the runbook directory. An author with several runbooks can take the engine from PyPI instead of copying it, see [The engine from PyPI](#the-engine-from-pypi). `flow.py` is written per runbook, see [`flow-language.md`](flow-language.md). It declares the inputs and the executors too, so `SKILL.md` has no Executors section.
 
 Three placeholders are never filled by the author. `<repo>` is the repository the steps work in: the directory the runbook is invoked in, or an input when the code lives elsewhere, in a worktree for instance. It is always among the run's inputs. `<run>` is the run directory. `<skill>` is the directory this `SKILL.md` was loaded from. In prompts, repository files are `<repo>/…`, input files are `<run>/…`, and step outputs are named without a path, `checks.md`: the launch message gives each its numbered path.
 
@@ -45,7 +45,7 @@ description: <What this runbook does, in one sentence, and the inputs it takes.>
 
 ## Steps
 
-Declared in `flow.py` next to this file: inputs, executors, steps with their prompts, what each reads and writes, and the transitions between them. `flow.py` drives the run and prints, for every launch, the executor's model and tool. This section is a pointer, not a copy.
+Declared in `flow.py` next to this file: inputs, executors, steps with their prompts, what each reads and writes, and the flow that calls them. `flow.py` drives the run and prints, for every launch, the executor's model and tool. This section is a pointer, not a copy.
 
 ## End of run
 
@@ -79,7 +79,7 @@ flow.py
 - A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
 - The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
 - A reply did not pass the check: `flow.py` prints a correction. Send it to the subagent that ran the step, as a follow-up message in its session, not as a new launch, and wait for its answer the way you wait for a step. Its answer goes to the same `reply` command. If your tool cannot send a message to a subagent that has finished, run the command `flow.py` printed for that case instead. An executor that only relays another agent's reply passes the correction on to that agent, in its session, and returns its answer verbatim.
-- A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <section>`. Executors you launched in this conversation are not gone: wait for them.
+- A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <call>`, with the address `flow.py` printed for that launch, such as `main/review#2`, in single quotes, since `#` and `[` mean things to a shell. Executors you launched in this conversation are not gone: wait for them.
 - You departed from these rules, or did something `flow.py` does not know about: `flow.py <run> log '<one line>'`.
 
 Launching
@@ -101,7 +101,8 @@ Status
 
 Human steps and side effects
 
-- `flow.py` tells you when to ask the human and what. Ask, then wait for the answer the way you wait for a step. A failed step with side effects is relaunched only after the human says yes: `flow.py <run> relaunch <section>`.
+- `flow.py` tells you when to ask the human and what. Ask, then wait for the answer the way you wait for a step. A failed or interrupted step with side effects is relaunched only after the human says yes: `flow.py <run> relaunch <call>`, with the address the question names.
+- `flow.py` tells you to withdraw a question: tell the human no answer to it is needed, and do not run its `answer` command.
 
 Ending
 
@@ -135,21 +136,35 @@ Your final message is one JSON object that fits the schema in the file your laun
 <What `done` means for this step, and for each field the step's `reply` declares, what it says and how it is counted. One line each.>
 ````
 
-The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine writes it to `<run>/schemas/<step>.json` and gives the executor its path in the launch message.
+The reply's JSON Schema comes from the step's `reply` in `flow.py`: the engine writes it to `<run>/schemas/<NN>-<step>.json` for each launch and gives the executor its path in the launch message.
 
 ## The engine from PyPI
 
-From 1.4.4 each release of `runbook.py` is also on PyPI as `agent-runbooks`, imported as `agent_runbooks`. A runbook can declare the release it needs instead of carrying a copy, and [uv](https://docs.astral.sh/uv/) downloads it once for every runbook that declares it. Such a runbook runs only where uv is installed; one with the copy needs only `python3`. Three things change:
+From 1.4.4 each release of the engine is also on PyPI as `agent-runbooks`. From 2.0.0 the copy and the package are the same file, `agent_runbooks.py`, so `flow.py` imports the engine with the same line either way: `from agent_runbooks import ...`. A runbook can declare the release it needs instead of carrying a copy, and [uv](https://docs.astral.sh/uv/) downloads it once for every runbook that declares it. Such a runbook runs only where uv is installed; one with the copy needs only `python3`. Three things change:
 
-- The runbook directory has no `runbook.py`. `flow.py` declares the engine under its shebang and imports it by the package's name:
+- The runbook directory has no `agent_runbooks.py`, and `flow.py` declares the engine in a block under its shebang. The rest of `flow.py` stays as it is. Delete the copy when moving to PyPI: Python puts the script's directory first on its import path, so an `agent_runbooks.py` left next to `flow.py` is the engine that runs, and the pin is silently ignored.
 
   ```python
   #!/usr/bin/env python3
   # /// script
   # requires-python = ">=3.9"
-  # dependencies = ["agent-runbooks>=1.4.4,<2"]
+  # dependencies = ["agent-runbooks>=2.0.0,<3"]
   # ///
-  from agent_runbooks import Runbook, end
+  """Steps and the flow of runbook-<name>. Run with --help for the commands."""
+
+  from agent_runbooks import Runbook, StepFailed, end, foreach, parallel
+
+  rb = Runbook()
+  # inputs, executors, steps
+
+
+  @rb.flow
+  def main(ctx):
+      ...
+
+
+  if __name__ == '__main__':
+      raise SystemExit(rb.main())
   ```
 
 - In the Execution rules copied into `SKILL.md`, every `python3 <skill>/flow.py` becomes `uv run <skill>/flow.py`. The commands `flow.py` prints start with `uv run` on their own.
@@ -160,10 +175,10 @@ From 1.4.4 each release of `runbook.py` is also on PyPI as `agent-runbooks`, imp
 - Add `.agent-runbooks/` to the `.gitignore` of the directory the runs will live in when you create the runbook.
 - A step that runs a command and reports the outcome (`passed`) writes the command's exit code and failing output to a file under `<run>` and changes nothing in the tree. The cheapest model that can run the command is enough for it. A step that judges needs the model the judgement needs. A check that exists but cannot run (no binary, no dependencies installed) is a failure, not a skip.
 - A step with side effects applies a file a former step wrote and takes no judgement calls. If it needs judgement, split it.
-- Only one step at a time changes the working tree, and nothing reads the tree while it changes. Parallel readers are fine.
-- Every pass writes a new numbered file, so nothing is overwritten. A step that needs the previous pass lists its own output in `reads` and tells a first pass from a later one by that file being absent, never by a counter it is not given.
-- A prompt shared by two steps takes its differences as `inputs` (`('id-prefix', 'b')`) and `writes` (`review-b.md`).
-- A step that earlier replies can make pointless gets `skip`, and the prompts of the steps after it say what to do when its file is absent. Skipping is cheaper than launching an executor to report that there is nothing to do.
+- Only one step at a time changes the working tree, and nothing reads the tree while it changes. Parallel readers are fine. A foreach whose body changes the tree takes `max_concurrent=1`.
+- Every pass writes a new numbered file, so nothing is overwritten. A step that needs its previous pass lists its own output in `reads`. In a group, `reads` do not reach an earlier group's files, so the flow passes the previous pass in: `review(previous=reviews.a)`. The step tells a first pass from a later one by that file being absent, never by a counter it is not given.
+- A prompt shared by two launches is one step called twice, its differences passed as keyword arguments of the call: `review(executor=other)`, `review(focus='tests')`. Each launch writes its own numbered file, and a step after them gets both through the result that holds them, `yield triage(reviews=reviews)`.
+- A step that earlier replies can make pointless is not called: an `if` in the flow goes past it, and the prompts of the steps after it say what to do when its file is absent. Not calling it is cheaper than launching an executor to report that there is nothing to do.
 - Step names are the names of their outputs where possible: step `checks` writes `checks.md`. The run directory then reads as the run: `00-preflight.md`, `01-implement.md`, `02-checks.md`, `03-fix-checks.md`, `04-checks.md`.
-- Keep step names unique across executor and human steps. Reserve `<step>-<digits>` for that step's section counters. Collection parameters take lists, tuples or other iterables, never a lone string. `rb.human(writes=...)` takes one file name.
+- Keep step names unique across executor and human steps, and step names, executor names, group names and branch keys to letters, digits, `_ . -`. Collection parameters take lists, tuples or other iterables, never a lone string. `rb.human(writes=...)` takes one file name.
 - A smoke input that takes the shortest path proves the launch, not the flow. Add a second one that reaches the loops and the human steps before the runbook is trusted with real work.

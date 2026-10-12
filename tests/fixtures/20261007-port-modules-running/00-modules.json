@@ -1,0 +1,18 @@
+[
+  {
+    "key": "core",
+    "path": "src/core"
+  },
+  {
+    "key": "cli",
+    "path": "src/cli"
+  },
+  {
+    "key": "web",
+    "path": "src/web"
+  },
+  {
+    "key": "docs",
+    "path": "docs"
+  }
+]

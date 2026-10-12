@@ -1,0 +1,508 @@
+{
+  "format": 2,
+  "runbook": "runbook-migrate-sites",
+  "status": "running",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo"
+  },
+  "calls": [
+    {
+      "id": "main/plan",
+      "attempt": 1,
+      "kind": "step",
+      "step": "plan",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md"
+      },
+      "files": {
+        "sites.json": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/00-sites.json"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "sites.json": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/00-sites.json"
+      },
+      "started_at": "2026-10-07T09:00:00Z",
+      "ended_at": "2026-10-07T09:02:10Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/sites",
+      "attempt": 1,
+      "kind": "foreach",
+      "step": "sites",
+      "status": "failed",
+      "over": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/00-sites.json",
+      "items": [
+        {
+          "key": "auth",
+          "table": "users"
+        },
+        {
+          "key": "billing",
+          "table": "invoices"
+        },
+        {
+          "key": "search",
+          "table": "documents"
+        }
+      ],
+      "index": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/01-sites.index.json",
+      "problem": null,
+      "started_at": "2026-10-07T09:02:10Z",
+      "ended_at": "2026-10-07T09:09:00Z"
+    },
+    {
+      "id": "main/sites[auth]",
+      "attempt": 1,
+      "kind": "item",
+      "step": "sites",
+      "status": "failed",
+      "fields": {
+        "key": "auth",
+        "table": "users"
+      },
+      "reply": null,
+      "reason": "users.email loses its NOT NULL constraint",
+      "files": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/04-migrate.md"
+      },
+      "started_at": "2026-10-07T09:02:10Z",
+      "ended_at": "2026-10-07T09:09:00Z"
+    },
+    {
+      "id": "main/sites[billing]",
+      "attempt": 1,
+      "kind": "item",
+      "step": "sites",
+      "status": "cancelled",
+      "fields": {
+        "key": "billing",
+        "table": "invoices"
+      },
+      "reply": null,
+      "reason": null,
+      "files": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/05-migrate.md"
+      },
+      "started_at": "2026-10-07T09:02:10Z",
+      "ended_at": "2026-10-07T09:09:00Z"
+    },
+    {
+      "id": "main/sites[auth]/migrate",
+      "attempt": 1,
+      "kind": "step",
+      "step": "migrate",
+      "status": "done",
+      "executor": "coder",
+      "reply": {
+        "risky": false
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md"
+      },
+      "files": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/04-migrate.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risky": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "risky"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/04-migrate.md"
+      },
+      "started_at": "2026-10-07T09:02:10Z",
+      "ended_at": "2026-10-07T09:06:40Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/sites[billing]/migrate",
+      "attempt": 1,
+      "kind": "step",
+      "step": "migrate",
+      "status": "done",
+      "executor": "coder",
+      "reply": {
+        "risky": true
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md"
+      },
+      "files": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/05-migrate.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risky": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "risky"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/05-migrate.md"
+      },
+      "started_at": "2026-10-07T09:02:10Z",
+      "ended_at": "2026-10-07T09:05:30Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/sites[billing]/approve",
+      "attempt": 1,
+      "kind": "human",
+      "step": "approve",
+      "status": "cancelled",
+      "executor": null,
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": null,
+      "writes": {
+        "approve.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/06-approve.md"
+      },
+      "started_at": "2026-10-07T09:05:30Z",
+      "ended_at": "2026-10-07T09:09:00Z"
+    },
+    {
+      "id": "main/sites[auth]/verify",
+      "attempt": 1,
+      "kind": "step",
+      "step": "verify",
+      "status": "failed",
+      "executor": "reviewer",
+      "reply": {
+        "reason": "users.email loses its NOT NULL constraint"
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/04-migrate.md"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "verify.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/07-verify.md"
+      },
+      "started_at": "2026-10-07T09:06:40Z",
+      "ended_at": "2026-10-07T09:09:00Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/reviews",
+      "attempt": 1,
+      "kind": "parallel",
+      "step": "reviews",
+      "status": "running",
+      "branches": null,
+      "started_at": "2026-10-07T09:09:00Z",
+      "ended_at": null
+    },
+    {
+      "id": "main/reviews/a",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 1
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md",
+        "sites.index": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/01-sites.index.json"
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/09-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/09-review.md"
+      },
+      "started_at": "2026-10-07T09:09:00Z",
+      "ended_at": "2026-10-07T09:12:00Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/reviews/b/review",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "blocked",
+      "executor": "reviewer",
+      "reply": {
+        "reason": "no second reviewer is set up"
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md",
+        "sites.index": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/01-sites.index.json"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/10-review.md"
+      },
+      "started_at": "2026-10-07T09:09:00Z",
+      "ended_at": "2026-10-07T09:12:30Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/reviews/b/review#2",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "running",
+      "executor": "coder",
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/brief.md",
+        "sites.index": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/01-sites.index.json"
+      },
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/11-review.md"
+      },
+      "started_at": "2026-10-07T09:12:30Z",
+      "ended_at": null,
+      "invalid_replies": []
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "key": "auth",
+    "table": "users"
+  },
+  {
+    "key": "billing",
+    "table": "invoices"
+  },
+  {
+    "key": "search",
+    "table": "documents"
+  }
+]

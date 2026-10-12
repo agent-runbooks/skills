@@ -1,0 +1,270 @@
+{
+  "format": 2,
+  "runbook": "runbook-review-loop",
+  "status": "waiting_for_human",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo",
+    "checks": "python3 -m unittest",
+    "maxFixRounds": 1
+  },
+  "calls": [
+    {
+      "id": "main/implement",
+      "attempt": 1,
+      "kind": "step",
+      "step": "implement",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/brief.md"
+      },
+      "files": {
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/00-implement.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/00-implement.md"
+      },
+      "started_at": "2026-10-07T14:00:00Z",
+      "ended_at": "2026-10-07T14:06:02Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/review",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 3
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/brief.md",
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/00-implement.md",
+        "fix.md": null,
+        "review.md": null
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/01-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "findings still open, 0 when none"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/01-review.md"
+      },
+      "started_at": "2026-10-07T14:06:02Z",
+      "ended_at": "2026-10-07T14:10:12Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/fix",
+      "attempt": 1,
+      "kind": "step",
+      "step": "fix",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/brief.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/01-review.md",
+        "rounds.md": null
+      },
+      "files": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/02-fix.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/02-fix.md"
+      },
+      "started_at": "2026-10-07T14:10:12Z",
+      "ended_at": "2026-10-07T14:13:42Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/review#2",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 1
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/brief.md",
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/00-implement.md",
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/02-fix.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/01-review.md"
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/03-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "findings still open, 0 when none"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/03-review.md"
+      },
+      "started_at": "2026-10-07T14:13:42Z",
+      "ended_at": "2026-10-07T14:14:52Z",
+      "invalid_replies": [
+        {
+          "reply": "{\"status\": \"done\"}",
+          "problem": "no field 'findings'"
+        }
+      ]
+    },
+    {
+      "id": "main/ask-rounds",
+      "attempt": 1,
+      "kind": "human",
+      "step": "ask-rounds",
+      "status": "waiting",
+      "executor": null,
+      "reply": null,
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": null,
+      "writes": {
+        "rounds.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-slugify-transliterate-question/04-rounds.md"
+      },
+      "started_at": "2026-10-07T14:14:52Z",
+      "ended_at": null
+    }
+  ]
+}

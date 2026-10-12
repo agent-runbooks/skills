@@ -1,15 +1,15 @@
 ---
 name: runbook-viewer
-description: "Shows the progress of a runbook run: a text status of its sections for the chat, and a page on localhost with each step's log lines and output files. Load it when the human asks for the progress or status of a runbook run or to read a step's output, and when a runbook's Execution rules point here."
+description: "Shows the progress of a runbook run: a text status of its steps for the chat, and a page on localhost with each step's log lines and output files. Load it when the human asks for the progress or status of a runbook run or to read a step's output, and when a runbook's Execution rules point here."
 ---
 
 # Runbook viewer
 
-`<viewer>` is the directory this `SKILL.md` was loaded from. `view.py` only reads the run directory.
+`<viewer>` is the directory this `SKILL.md` was loaded from. `view.py` shows runs of engine 1.x and 2.x, and only reads the run directory.
 
 ## During a run
 
-For the orchestrator of a runbook. After every `reply` and `answer` command, and once after `start`, run `python3 <viewer>/view.py <run> --status` and show its output to the human as it is, in a code block, with no commentary. Nothing while waiting for a step. Do not start the page unless the human asks for it.
+For the orchestrator of a runbook. After every `flow.py` command that launches or ends a step (`start`, `reply`, `answer`, `interrupted`, `relaunch`), run `python3 <viewer>/view.py <run> --status --tail 10` and show its output to the human as it is, in a code block, with no commentary. Once the run has ended, run it once more without `--tail`. Nothing while waiting for a step. Do not start the page unless the human asks for it.
 
 ## When the human asks
 

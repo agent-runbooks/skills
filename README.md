@@ -6,39 +6,51 @@ A **runbook** lets you give an agent session a procedure to run step by step thr
 
 ## How it works
 
-The steps are prompt files. The transitions live in `flow.py`, a few dozen lines of Python on a small engine copied into every runbook, so a finished runbook runs where nothing from this repository is installed. The orchestrating session launches what `flow.py` prints, waits, and hands each executor's JSON reply back to it; it never reasons about what comes next. Steps pass work to each other through files in a run directory, so the orchestrator's context stays small, and an interrupted run resumes from `state.json`.
+The steps are prompt files. The flow is `flow.py`: it declares the steps and calls them from one Python generator, usually a few dozen lines. A copy of the small engine sits next to it, so a finished runbook runs where nothing from this repository is installed.
 
-One step of a flow, with its branches next to it:
+The orchestrating session launches what `flow.py` prints, waits for the step to finish, and passes the executor's JSON reply back to `flow.py`. It never decides what comes next. Steps hand work to each other through files in a run directory, which keeps the orchestrator's context small. An interrupted run resumes from `state.json`.
+
+One step, and the flow that calls it:
 
 ```python
-rb.step(
-    'implement',
-    executor='coder',
-    prompt='prompts/01-implement.md',
-    writes=['implement.md'],
-    reply={'checks_passed': bool},
-    next=lambda r, s: (
-        parallel('review-a', 'review-b') if r.checks_passed
-        else 'fix' if s.done('fix') < s.inputs.maxFixRounds
-        else end('failed', 'read <run>/implement.md')
-    ),
+review = rb.step(
+    'review',
+    executor=reviewer,
+    prompt='prompts/02-review.md',
+    reads=['implement.md', 'fix.md'],
+    writes=['review.md'],
+    reply={'findings': int},
 )
+
+
+@rb.flow
+def main(ctx):
+    yield implement()
+    rounds = 0
+    while True:
+        reviews = yield parallel('reviews', a=review(), b=review(executor=other))
+        if reviews.a.findings + reviews.b.findings == 0:
+            return end('ready', 'read <run>/implement.md')
+        if rounds >= ctx.inputs.maxFixRounds:
+            return end('needs_attention', 'read <run>/progress.md')
+        yield fix(reviews=reviews)
+        rounds += 1
 ```
 
 A step names its executor by description, such as "the cheapest fast model" or "a model from another vendor". The orchestrating session maps it onto what it can launch: its own subagents, or, with [throng-mcp](https://github.com/agent-runbooks/throng-mcp), Claude Code, Codex or OpenCode, so one run can mix vendors.
 
-For example, here is a run of [runbook-task-cycle](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle) halfway through, as runbook-viewer prints it into the chat after every step:
+For example, here is a run halfway through, as runbook-viewer prints it into the chat after every step. Its runbook, runbook-migrate-sites, is a test fixture of the viewer, not one to install:
 
 ```
-20261003-add-version-constant · runbook-task-cycle · running
-✓ preflight     sonnet       0:42  clean: true
-✓ implement     opus         5:20
-✓ checks        sonnet       0:43  passed: false
-✗ fix-checks    opus         0:10  interrupted
-✓ fix-checks-2  opus         2:13  fixed: true
-✓ checks-2      sonnet       0:38  passed: true
-● review-a      opus         4:05
-✓ review-b      gpt-6.1-sol  2:45  findings: 0
+20261007-migrate-sites-running · runbook-migrate-sites · running
+✓ plan  coder   2:10
+  foreach sites: 1 failed (auth), 1 cancelled, 1 not started
+  ✗ [auth]     verify       reviewer   6:50  users.email loses its NOT NULL constraint
+  ✗ [billing]  approve                 6:50  cancelled
+  · [search]   not started
+  parallel reviews: 1 done, 1 running
+  ✓ a  review    reviewer   3:00  findings: 1
+  ● b  review#2  coder      5:00
 ```
 
 Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):

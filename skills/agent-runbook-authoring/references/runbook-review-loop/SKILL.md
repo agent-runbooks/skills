@@ -48,7 +48,7 @@ flow.py
 - A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
 - The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
 - A reply did not pass the check: `flow.py` prints a correction. Send it to the subagent that ran the step, as a follow-up message in its session, not as a new launch, and wait for its answer the way you wait for a step. Its answer goes to the same `reply` command. If your tool cannot send a message to a subagent that has finished, run the command `flow.py` printed for that case instead. An executor that only relays another agent's reply passes the correction on to that agent, in its session, and returns its answer verbatim.
-- A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <section>`. Executors you launched in this conversation are not gone: wait for them.
+- A running step's executor is gone, because the session is new or the tool reports it dead: `flow.py <run> interrupted <call>`, with the address `flow.py` printed for that launch, such as `main/review#2`, in single quotes, since `#` and `[` mean things to a shell. Executors you launched in this conversation are not gone: wait for them.
 - You departed from these rules, or did something `flow.py` does not know about: `flow.py <run> log '<one line>'`.
 
 Launching
@@ -70,7 +70,8 @@ Status
 
 Human steps and side effects
 
-- `flow.py` tells you when to ask the human and what. Ask, then wait for the answer the way you wait for a step. A failed step with side effects is relaunched only after the human says yes: `flow.py <run> relaunch <section>`.
+- `flow.py` tells you when to ask the human and what. Ask, then wait for the answer the way you wait for a step. A failed or interrupted step with side effects is relaunched only after the human says yes: `flow.py <run> relaunch <call>`, with the address the question names.
+- `flow.py` tells you to withdraw a question: tell the human no answer to it is needed, and do not run its `answer` command.
 
 Ending
 
@@ -78,7 +79,7 @@ Ending
 
 ## Steps
 
-Declared in `flow.py` next to this file: inputs, executors, steps with their prompts, what each reads and writes, and the transitions between them. `flow.py` drives the run and prints, for every launch, the executor's model and tool. This section is a pointer, not a copy.
+Declared in `flow.py` next to this file: inputs, executors, steps with their prompts, what each reads and writes, and the flow that calls them. `flow.py` drives the run and prints, for every launch, the executor's model and tool. This section is a pointer, not a copy.
 
 ## End of run
 

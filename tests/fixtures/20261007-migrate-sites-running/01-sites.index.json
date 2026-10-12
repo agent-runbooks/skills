@@ -1,0 +1,27 @@
+[
+  {
+    "key": "auth",
+    "status": "failed",
+    "reply": null,
+    "reason": "users.email loses its NOT NULL constraint",
+    "files": {
+      "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/04-migrate.md"
+    }
+  },
+  {
+    "key": "billing",
+    "status": "cancelled",
+    "reply": null,
+    "reason": null,
+    "files": {
+      "migrate.md": "/tmp/rb-demo/.agent-runbooks/runs/20261007-migrate-sites-running/05-migrate.md"
+    }
+  },
+  {
+    "key": "search",
+    "status": "not_started",
+    "reply": null,
+    "reason": null,
+    "files": {}
+  }
+]

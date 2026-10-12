@@ -35,6 +35,6 @@ jobs:
         working-directory: skills/runbook-viewer
       - if: matrix.python == '3.13'
         run: |
-          cmp ../runbook.py runbook.py
+          cmp ../agent_runbooks.py agent_runbooks.py
           python flow.py --check
         working-directory: skills/agent-runbook-authoring/references/runbook-review-loop
