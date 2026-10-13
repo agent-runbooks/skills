@@ -32,6 +32,8 @@ from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = 'state.json'
+# The engine's own files, not the run's: a state being written, and the lock a command holds.
+INTERNAL = (STATE + '.tmp', 'state.lock')
 PROGRESS = 'progress.md'
 # The engine's file was runbook.py through 1.x and is agent_runbooks.py from 2.0.
 FORMATS = {1: 'runbook.py 1.x', 2: 'agent_runbooks.py 2.x'}
@@ -47,7 +49,8 @@ MARKS = {
     'not_started': '·',
 }
 OPEN = ('running', 'waiting')
-LAUNCHES = ('step', 'human')
+# A code step is run by flow.py itself, from 2.1.
+LAUNCHES = ('step', 'human', 'code')
 GROUPS = ('parallel', 'foreach')
 WAITING = 'waiting for the human'
 # A group's header counts its branches or items by status, in this order; failed lists their keys.
@@ -187,7 +190,7 @@ def list_files(run: str) -> list[dict[str, Any]]:
     """The regular files in the run directory, excluding temporary state, with size and modification time."""
     files = []
     for name in sorted(os.listdir(run)):
-        if name == STATE + '.tmp':
+        if name in INTERNAL:
             continue
         path = os.path.join(run, name)
         if os.path.isfile(path):
@@ -221,10 +224,16 @@ def short_label(call: dict[str, Any]) -> str:
     return full[len('main/') :] if full.startswith('main/') else full
 
 
+def executor(call: dict[str, Any]) -> Any:
+    """The executor the attempt ran on, `code` for a code step."""
+    return 'code' if call.get('kind') == 'code' else call.get('executor')
+
+
 def call_files(call: dict[str, Any], names: set[str]) -> list[str]:
     """The files the attempt was told to write that are in the run directory: what a done attempt wrote, or what a
-    running or failed one has written so far. Matched by name, so a run directory moved since keeps its files."""
-    paths = [*(call.get('writes') or {}).values(), *(call.get('files') or {}).values()]
+    running or failed one has written so far, and a code step's log. Matched by name, so a run directory moved since
+    keeps its files."""
+    paths = [*(call.get('writes') or {}).values(), *(call.get('files') or {}).values(), call.get('log')]
     found = dict.fromkeys(os.path.basename(p) for p in paths if isinstance(p, str))
     return [name for name in found if name in names]
 
@@ -298,7 +307,7 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
                 'name': short_label(c),
                 'status': c.get('status'),
                 'mark': mark(c),
-                'executor': c.get('executor'),
+                'executor': executor(c),
                 'started_at': c.get('started_at'),
                 'ended_at': c.get('ended_at'),
                 'note': summary(c),
@@ -319,7 +328,7 @@ def snapshot(run: str, now: datetime) -> dict[str, Any]:
 
 def run_file(run: str, name: str) -> str | None:
     """The path of a regular file directly in the run directory by this name, or None for anything else."""
-    if not name or name in ('.', '..', STATE + '.tmp') or '/' in name or '\\' in name or '\0' in name:
+    if not name or name in ('.', '..', *INTERNAL) or '/' in name or '\\' in name or '\0' in name:
         return None
     root = os.path.realpath(run)
     path = os.path.realpath(os.path.join(root, name))
@@ -436,7 +445,7 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
                 'step': '',
                 'status': latest.get('status'),
                 'mark': mark(latest),
-                'executor': latest.get('executor'),
+                'executor': executor(latest),
                 'started_at': latest.get('started_at'),
                 'ended_at': latest.get('ended_at'),
                 'open': latest.get('status') in OPEN,
@@ -506,7 +515,7 @@ def _member_row(
         'step': step,
         'status': status,
         'mark': MARKS.get(status, ' '),
-        'executor': (shown or {}).get('executor'),
+        'executor': executor(shown or {}),
         'started_at': started,
         'ended_at': ended,
         'open': status in OPEN,

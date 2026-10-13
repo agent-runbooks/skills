@@ -19,6 +19,7 @@ import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, '..', '..', 'skills', 'agent-runbook-authoring', 'references')
@@ -31,12 +32,26 @@ import agent_runbooks  # noqa: E402
 REVIEW_LOOP = os.path.join(ROOT, 'runbook-review-loop', 'flow.py')
 MIGRATE_SITES = os.path.join(HERE, 'runbook-migrate-sites', 'flow.py')
 PORT_MODULES = os.path.join(HERE, 'runbook-port-modules', 'flow.py')
+# Run from a copy under REPO, so the tracebacks in code steps' logs name the same path on every machine.
+RELEASE_CHECKS = os.path.join(REPO, 'runbook-release-checks', 'flow.py')
+# The pid the code steps' records take: the same on every regeneration.
+PID = 4242
 
 
 class Run:
     """A run of one flow.py, driven command by command; `after` moves the engine's clock before the next one."""
 
-    def __init__(self, flow: str, name: str, start: str, inputs: dict[str, Any], files: dict[str, str]) -> None:
+    def __init__(
+        self,
+        flow: str,
+        name: str,
+        start: str,
+        inputs: dict[str, Any],
+        files: dict[str, str],
+        code: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
+        """code: for a code step by name, how many seconds of the engine's clock its function takes and how many of
+        its first runs end the process after the function returned, as a kill would before the result is saved."""
         argv0 = sys.argv[0]
         sys.argv[0] = flow  # the Runbook takes its directory, and the runbook's name, from it
         try:
@@ -51,6 +66,8 @@ class Run:
         os.makedirs(self.dir)
         for file, text in files.items():
             self.write(os.path.join(self.dir, file), text)
+        for step, (seconds, deaths) in (code or {}).items():
+            self.time(step, seconds, deaths)
         self.command('start', json.dumps(inputs))
 
     @staticmethod
@@ -62,11 +79,29 @@ class Run:
         self.clock += timedelta(minutes=minutes, seconds=seconds)
         return self
 
+    def time(self, step: str, seconds: int, deaths: int) -> None:
+        declared = self.rb.steps[step]
+        run = declared.run
+        left = [deaths]
+
+        def timed(ctx: Any, **kwargs: Any) -> Any:
+            self.clock += timedelta(seconds=seconds)
+            result = run(ctx, **kwargs)
+            if left[0]:
+                left[0] -= 1
+                raise KeyboardInterrupt
+            return result
+
+        declared.run = timed
+
     def command(self, *args: str) -> None:
         agent_runbooks.utc_now = lambda: self.clock.strftime('%Y-%m-%dT%H:%M:%SZ')
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = self.rb.main([self.flow, self.dir, *args])
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = self.rb.main([self.flow, self.dir, *args])
+        except KeyboardInterrupt:
+            return  # a code step ended the process, as a kill would
         if code != 0:
             raise SystemExit(f'{self.name}: {" ".join(args)} exited {code}:\n{out.getvalue()}')
 
@@ -254,10 +289,36 @@ def nested() -> None:
     run.keep()
 
 
+def code_steps() -> None:
+    """Code steps around an agent step: one done, one failed with a traceback in its log, one whose process ended
+    before its result was saved and that ran again as @2, and one running when its process ended."""
+    source = os.path.dirname(RELEASE_CHECKS)
+    shutil.rmtree(source, ignore_errors=True)
+    shutil.copytree(os.path.join(HERE, 'runbook-release-checks'), source)
+    with mock.patch('os.getpid', return_value=PID):
+        run = Run(
+            RELEASE_CHECKS,
+            '20261012-release-checks-running',
+            '2026-10-12T11:00:00Z',
+            {'brief': 'brief.md', 'repo': REPO},
+            {'brief.md': '# Release 1.5.0\n\nCheck the tree and write the release notes.\n'},
+            {'changes': (12, 0), 'build': (40, 1), 'tests': (30, 1)},
+        )
+        run.after(1, 0).command()
+        run.after(4, 30).reply(
+            'main/notes',
+            {'status': 'done'},
+            {'notes.md': '# textkit 1.5.0\n\n`slugify` takes `max_length` and transliterates Cyrillic.\n'},
+        )
+    run.keep()
+    shutil.rmtree(source)
+
+
 if __name__ == '__main__':
     os.makedirs(RUNS, exist_ok=True)
     ready()
     question()
     groups()
     nested()
+    code_steps()
     os.removedirs(RUNS)

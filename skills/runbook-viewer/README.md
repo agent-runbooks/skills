@@ -25,7 +25,7 @@ Each row is a step. The mark says how it went:
 - `!` blocked
 - `·` not started yet
 
-After the mark come the step's name, the executor it ran on (a name from the runbook's `flow.py`, like `coder`), how long it took, and what it replied: the fields of its answer, why it failed, or what you chose. `review#2` is the second run of `review`, and `fix@2` is `fix` started again after it was interrupted.
+After the mark come the step's name, the executor it ran on (a name from the runbook's `flow.py`, like `coder`, or `code` for a step `flow.py` runs itself), how long it took, and what it replied: the fields of its answer, why it failed, or what you chose. `review#2` is the second run of `review`, and `fix@2` is `fix` started again after it was interrupted.
 
 The steps of a parallel or a foreach are grouped. A group opens with a line like `foreach sites: 1 failed (auth), 1 cancelled, 1 not started`, which counts its items and names the failed ones. Under it, each item, `[auth]`, or branch, `a`, gets one row with the step it is on now or the one it ended with. A group inside an item or a branch sits one level deeper.
 
@@ -45,7 +45,7 @@ The viewer reads runs of engine 1.x and 2.x.
 
 ## The page
 
-On the left is the same tree of steps, and below it the run's own files: `brief.md`, `progress.md`, the diff, and the item list of each foreach. Click a row to see everything that happened in it on the right: every attempt with its lines from `progress.md` and the files it wrote, markdown rendered, diffs coloured.
+On the left is the same tree of steps, and below it the run's own files: `brief.md`, `progress.md`, the diff, and the item list of each foreach. Click a row to see everything that happened in it on the right: every attempt with its lines from `progress.md` and the files it wrote, a code step's log among them, markdown rendered, diffs coloured.
 
 The page refreshes every two seconds and follows the run, jumping to the running step or to the question waiting for you. Clicking a row stops that, and "following" turns it back on. The page only shows the run. You answer the orchestrator's questions in the chat.
 

@@ -1,0 +1,6 @@
+ruff check src/
+Traceback (most recent call last):
+  File "/tmp/rb-demo/runbook-release-checks/flow.py", line 23, in run_lint
+    return {'status': 'done', 'warnings': limits['max-warnings']}
+                                          ~~~~~~^^^^^^^^^^^^^^^^
+KeyError: 'max-warnings'

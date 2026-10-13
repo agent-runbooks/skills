@@ -8,6 +8,7 @@ Engine 2.x runs, made by `make.py`:
 - `20261007-slugify-transliterate-question`: `runbook-review-loop` waiting for the human after its fix round, with one reply corrected on the way
 - `20261007-migrate-sites-running`: `runbook-migrate-sites/flow.py`, kept here; a foreach failed by one item, with a question withdrawn and an item cancelled, then a parallel in flight with a blocked branch step called again
 - `20261007-port-modules-running`: `runbook-port-modules/flow.py`, kept here; a foreach whose items each run a parallel: one item done, one with a branch step interrupted and launched again, one in its first step, one not started
+- `20261012-release-checks-running`: `runbook-release-checks/flow.py`, kept here; code steps around an agent step: one done, one failed with a traceback in its log, one whose process ended before its result was saved and that ran again as `build@2`, and one running when its process ended
 
 Engine 1.x runs, `state.json` format 1, kept for the viewer's format-1 path. `make.py` does not make them:
 
@@ -21,4 +22,4 @@ To make the 2.x runs again, after a change in the engine or in a flow:
 python3 tests/fixtures/make.py
 ```
 
-`make.py` drives each run through the engine's commands with fake executors and a fixed clock, under `/tmp/rb-demo/.agent-runbooks/runs` so the recorded paths stay the same, and moves the runs here in place of the old ones. Then run `test_view.py` and update what it expects together with the fixtures.
+`make.py` drives each run through the engine's commands with fake executors and a fixed clock, under `/tmp/rb-demo/.agent-runbooks/runs` so the recorded paths stay the same, and moves the runs here in place of the old ones. Code steps run from a copy of their runbook under `/tmp/rb-demo`, so the tracebacks in their logs name the same paths, with a fixed pid; a process ending is a `KeyboardInterrupt` raised after the function returned. Then run `test_view.py` and update what it expects together with the fixtures.

@@ -25,10 +25,12 @@ READY = os.path.join(FIXTURES, '20261007-slugify-max-length')
 QUESTION = os.path.join(FIXTURES, '20261007-slugify-transliterate-question')
 RUNNING = os.path.join(FIXTURES, '20261007-migrate-sites-running')
 NESTED = os.path.join(FIXTURES, '20261007-port-modules-running')
+CODE = os.path.join(FIXTURES, '20261012-release-checks-running')
 NOW_READY = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
 NOW_QUESTION = datetime(2026, 10, 7, 14, 20, 0, tzinfo=timezone.utc)
 NOW_RUNNING = datetime(2026, 10, 7, 9, 14, 0, tzinfo=timezone.utc)
 NOW_NESTED = datetime(2026, 10, 7, 16, 10, 0, tzinfo=timezone.utc)
+NOW_CODE = datetime(2026, 10, 12, 11, 8, 30, tzinfo=timezone.utc)
 # Runs of engine 1.x, state.json format 1, kept from before engine 2.0.
 READY_1 = os.path.join(FIXTURES, '20261002-slugify-max-length')
 QUESTION_1 = os.path.join(FIXTURES, '20261003-slugify-transliterate-question')
@@ -96,6 +98,18 @@ class StatusTest(unittest.TestCase):
   parallel reviews: 1 done, 1 running
   ✓ a  review    reviewer   3:00  findings: 1
   ● b  review#2  coder      5:00""",
+        )
+
+    def test_code_steps(self) -> None:
+        self.assertEqual(
+            view.status_text(CODE, NOW_CODE),
+            """\
+20261012-release-checks-running · runbook-release-checks · running
+✓ changes  code    0:12  commits: 3
+✗ lint     code    0:00  KeyError: 'max-warnings'
+✓ build@2  code    0:40  wheel: dist/textkit-1.5.0-py3-none-any.whl
+✓ notes    coder   4:30
+● tests    code    1:28""",
         )
 
     def test_nested_groups(self) -> None:
@@ -599,6 +613,45 @@ class ReadyFilesTest(RunDirTestCase):
         snap = view.snapshot(self.run_dir, NOW_READY)
         self.assertEqual(snap['calls'][2]['files'], ['02-fix.md'])
         self.assertNotIn('02-fix.md', snap['run_files'])
+
+
+class CodeFilesTest(RunDirTestCase):
+    fixture = CODE
+
+    def test_a_code_steps_log_is_among_its_files(self) -> None:
+        snap = view.snapshot(self.run_dir, NOW_CODE)
+        calls = {c['label']: c for c in snap['calls']}
+        self.assertEqual(
+            [(c['label'], c['status'], c['executor'], c['files']) for c in snap['calls']],
+            [
+                ('main/changes', 'done', 'code', ['00-changes.md', '00-changes.code.log']),
+                ('main/lint', 'failed', 'code', ['01-lint.code.log']),
+                ('main/build', 'interrupted', 'code', ['02-build.code.log']),
+                ('main/build@2', 'done', 'code', ['03-build.code.log']),
+                ('main/notes', 'done', 'coder', ['04-notes.md']),
+                ('main/tests', 'running', 'code', ['05-tests.code.log']),
+            ],
+        )
+        self.assertEqual(
+            calls['main/build']['log'],
+            ['- main/build: started (pid 4242)', '- main/build: interrupted (owner process lost)'],
+        )
+        self.assertEqual(calls['main/lint']['note'], "KeyError: 'max-warnings'")
+        self.assertEqual(snap['run_files'], ['brief.md', 'progress.md'])
+        with open(view.run_file(self.run_dir, '01-lint.code.log') or '', encoding='utf-8') as f:
+            log = f.read()
+        self.assertIn('Traceback (most recent call last):', log)
+        self.assertTrue(log.endswith("KeyError: 'max-warnings'\n"), log)
+        row = next(r for r in snap['rows'] if r['id'] == 'main/build')
+        self.assertEqual(
+            (row['label'], row['executor'], row['attempts']), ('build@2', 'code', ['main/build', 'main/build@2'])
+        )
+
+    def test_the_lock_is_not_listed_or_served(self) -> None:
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, 'state.lock')))
+        snap = view.snapshot(self.run_dir, NOW_CODE)
+        self.assertNotIn('state.lock', [f['name'] for f in snap['files']])
+        self.assertIsNone(view.run_file(self.run_dir, 'state.lock'))
 
 
 class RowsTest(unittest.TestCase):
