@@ -1,6 +1,6 @@
 # Writing flow.py
 
-`flow.py` declares the steps of a runbook in Python, on top of the engine `agent_runbooks.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows, and imported as `agent_runbooks` either way. It writes the flow as one generator that calls the steps. `flow.py` is also the command the orchestrator runs: the engine gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.1, which added code steps; the 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
+`flow.py` declares the steps of a runbook in Python, on top of the engine `agent_runbooks.py`, which is copied from this skill unchanged or declared from PyPI as `template.md` shows, and imported as `agent_runbooks` either way. It writes the flow as one generator that calls the steps. `flow.py` is also the command the orchestrator runs: the engine gives it `start`, `reply`, `answer`, `interrupted`, `relaunch`, `log`, a status call and `--check`. This is the language of engine 2.x. The 1.x language and how to port from it are in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ```python
 #!/usr/bin/env python3
@@ -170,103 +170,9 @@ Code runs inside whichever `flow.py` command reaches it: `start`, `reply`, `answ
 
 Another `flow.py` command on the same run, such as a `reply` for a parallel agent step while a long command runs in the background, waits on the lock for moments only. It prints a code call that runs in another command as `running in another flow.py command, code steps: ...`, and it may run another code call that is ready: branches of a parallel and items of a foreach that the flow made concurrent may run in different processes at once, as agents do. No call is run by two commands.
 
-At most once per attempt. A recorded result is never run again, but the process can end after the function returned and before its result was saved. The next command closes a running code call whose process is gone, by its pid, as `interrupted`, with the note `owner process lost`, and runs the next attempt, `@2`, at once; with `side_effects`, the human is asked first, as for an interrupted agent step. A call whose previous attempt lost its process too is closed `failed`, `the owner process disappeared without saving a result twice`, and no further attempt opens; a relaunch on the human's yes counts afresh. So a code step without `side_effects` tolerates a repeat: a function that creates a worktree finds the one it made. The function waits for the child processes it starts before it returns. The engine kills nothing, and does not promise that a repeat after a kill is safe. The pid alone identifies the process, so a pid reused by another process keeps the call waiting.
+At most once per attempt. A recorded result is never run again, but the process can end after the function returned and before its result was saved. The next command closes a running code call whose process is gone, by its pid, as `interrupted`, with the note `owner process lost`, and runs the next attempt, `@2`, at once; with `side_effects`, the human is asked first, as for an interrupted agent step. A call whose previous attempt lost its process too is closed `failed`, `the owner process disappeared without saving a result twice`, and no further attempt opens; a relaunch on the human's yes counts afresh. So a code step without `side_effects` tolerates a repeat: a function that creates something checks first whether the earlier attempt made it. The function waits for the child processes it starts before it returns. The engine kills nothing, and does not promise that a repeat after a kill is safe. The pid alone identifies the process, so a pid reused by another process keeps the call waiting.
 
 A code call costs what an agent reply costs in its own command: one replay, one load and two saves of `state.json`. A chain of K code calls in one command costs what K replies cost in K commands; the CHANGELOG entry of 2.1.0 gives a measurement.
-
-### Worktrees
-
-Steps that change files can run side by side, each in a worktree of its own. Code steps create the worktrees, run the tests in them, merge them back one after another and remove them; an agent step works in the worktree its message names. The executor's description says so: `working directory = the worktree from the message, else repo`.
-
-```python
-import os
-import subprocess
-
-from agent_runbooks import Runbook, StepFailed, end, foreach
-
-rb = Runbook()
-
-rb.inputs(repo=str, checks=str)
-
-coder = rb.executor(
-    'coder', 'general-purpose, on the model of the main session, working directory = the worktree from the message, else repo'
-)
-
-
-def git(ctx, *args, cwd=None):
-    return subprocess.run(['git', *args], cwd=cwd or ctx.repo, check=True, stdout=subprocess.PIPE, text=True).stdout
-
-
-def record_base(ctx):
-    return {'status': 'done', 'commit': git(ctx, 'rev-parse', 'HEAD').strip()}
-
-
-def create_worktree(ctx, base):
-    path = os.path.join(ctx.run, 'worktrees', ctx.item.key)
-    if not os.path.isdir(path):  # a repeat finds the worktree it made
-        git(ctx, 'worktree', 'add', '-B', f'migrate/{ctx.item.key}', path, base)
-    return {'status': 'done', 'path': path}
-
-
-def run_tests(ctx, worktree):
-    with open(ctx.writes['tests.log'], 'w') as log:
-        p = subprocess.run(ctx.inputs.checks, shell=True, cwd=worktree, stdout=log, stderr=subprocess.STDOUT)
-    return {'status': 'done', 'passed': p.returncode == 0}
-
-
-def merge_worktree(ctx, path):
-    branch = git(ctx, 'branch', '--show-current', cwd=path).strip()
-    if subprocess.run(['git', 'merge', '--no-edit', branch], cwd=ctx.repo).returncode == 0:
-        return {'status': 'done', 'conflict': False}
-    if not git(ctx, 'diff', '--name-only', '--diff-filter=U'):
-        raise StepFailed(f'git merge {branch} failed without a conflict')
-    git(ctx, 'merge', '--abort')
-    return {'status': 'done', 'conflict': True}
-
-
-def remove_worktrees(ctx, done):
-    for item in done.items:
-        if item.status == 'done' and os.path.isdir(item.reply['worktree']):
-            git(ctx, 'worktree', 'remove', '--force', item.reply['worktree'])
-    return {'status': 'done'}
-
-
-base_commit = rb.code('base-commit', run=record_base, reply={'commit': str})
-wt_create = rb.code('wt-create', run=create_worktree, reply={'path': str})
-tests = rb.code('tests', run=run_tests, reply={'passed': bool}, writes=['tests.log'])
-merge = rb.code('merge', run=merge_worktree, reply={'conflict': bool}, side_effects='merges a branch into the checked-out one')
-cleanup = rb.code('cleanup', run=remove_worktrees)
-migrate = rb.step('migrate', executor=coder, prompt='prompts/01-migrate.md', reads=['working tree'], writes=['migrate.md'])
-resolve = rb.step('resolve', executor=coder, prompt='prompts/02-resolve.md', reads=['working tree'], writes=['resolve.md'])
-
-
-@rb.flow
-def main(ctx):
-    base = yield base_commit()
-
-    def migrate_one(ctx, item):
-        wt = yield wt_create(base=base.commit)
-        yield migrate(worktree=wt.path)
-        r = yield tests(worktree=wt.path)
-        if not r.passed:
-            raise StepFailed(f'the tests fail in {wt.path}')
-        return {'worktree': wt.path}
-
-    done = yield foreach('sites', over='sites.json', body=migrate_one, on_item_failure='skip')
-    for item in done.items:
-        if item.status == 'done':
-            m = yield merge(path=item.reply['worktree'])
-            if m.conflict:
-                yield resolve(worktree=item.reply['worktree'])
-    yield cleanup(done=done)
-    return end('ready', 'read <run>/sites.index')
-```
-
-- The base commit is recorded before the foreach, so every worktree starts from the same commit, however long the items take.
-- An agent step gets the worktree as a line of its message, `worktree: <path>`, from its keyword argument. Its prompt has it commit its change on the worktree's branch: a merge takes commits, not files left in a worktree.
-- A known conflict is `done` with `conflict: true`, and the flow decides what follows, here an agent step that merges and resolves it. A failed `merge`, a step with `side_effects`, would ask the human about a relaunch instead. A git failure that is not a conflict fails the call.
-- The merges run one after another, into one checked-out branch, after every item has ended.
-- `cleanup` removes the worktrees of the items that are done, and keeps those of failed items for the human to look at.
 
 ## `@rb.flow` and `yield`
 
