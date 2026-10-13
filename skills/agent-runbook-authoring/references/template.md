@@ -75,6 +75,8 @@ Starting
 flow.py
 
 - It keeps the state of the run and prints what to do: which steps to launch, with which executor and what message, whom to wait for, what to ask the human, or that the run has ended. Do all of what it prints, then wait. Every command it asks you to run next is printed in full.
+- A `flow.py` command may run long, because it runs the runbook's code steps itself. Run it with the largest timeout your tool accepts, and wait for it as for a step. If your tool moves it to the background and tells you when it exits, wait for that. If your tool killed it, run `python3 <skill>/flow.py <run>` and do what it prints. Never start a second `flow.py` for a call that is running.
+- `flow.py` names a code step running in another `flow.py` command. It is not a subagent: wait for that command, and never run `interrupted` for it.
 - An executor is a named way to launch a step: a new subagent through your own subagent tool, with the model and settings its description gives, or through another tool when the description names one.
 - A step's message arrives: take the last JSON object in it and run the `reply` command printed for that step with that JSON. No JSON object in the message: pass `{}`. Any JSON argument, for `start`, `reply` or `answer`, with a single quote (`'`) in it goes through stdin: put `-` in place of the JSON and pass the JSON on stdin, in a POSIX shell with a quoted heredoc. One argument of a command at most.
 - The human answers a question: map the answer to one of the choices `flow.py` listed, ask again if none fits, and run the `answer` command printed with that choice and the human's words verbatim. A free-text question takes the words alone. When `flow.py` lists fields with the question, the command takes a JSON object in place of the choice: the choice and the fields the human gave. A field they did not give is left out, never guessed. `flow.py` keeps the words and writes them where the steps that follow read them.
@@ -148,7 +150,7 @@ From 1.4.4 each release of the engine is also on PyPI as `agent-runbooks`. From 
   #!/usr/bin/env python3
   # /// script
   # requires-python = ">=3.9"
-  # dependencies = ["agent-runbooks>=2.0.0,<3"]
+  # dependencies = ["agent-runbooks>=2.1.0,<3"]
   # ///
   """Steps and the flow of runbook-<name>. Run with --help for the commands."""
 
@@ -173,7 +175,7 @@ From 1.4.4 each release of the engine is also on PyPI as `agent-runbooks`. From 
 ## Notes for the author
 
 - Add `.agent-runbooks/` to the `.gitignore` of the directory the runs will live in when you create the runbook.
-- A step that runs a command and reports the outcome (`passed`) writes the command's exit code and failing output to a file under `<run>` and changes nothing in the tree. The cheapest model that can run the command is enough for it. A step that judges needs the model the judgement needs. A check that exists but cannot run (no binary, no dependencies installed) is a failure, not a skip.
+- A step that runs a command and reports the outcome (`passed`) is a code step, `rb.code`: its function runs the command, writes the exit code and failing output to a file it `writes`, returns the field, and changes nothing in the tree. A step that judges needs the model the judgement needs. A check that exists but cannot run (no binary, no dependencies installed) is a failure, not a skip.
 - A step with side effects applies a file a former step wrote and takes no judgement calls. If it needs judgement, split it.
 - Only one step at a time changes the working tree, and nothing reads the tree while it changes. Parallel readers are fine. A foreach whose body changes the tree takes `max_concurrent=1`.
 - Every pass writes a new numbered file, so nothing is overwritten. A step that needs its previous pass lists its own output in `reads`. In a group, `reads` do not reach an earlier group's files, so the flow passes the previous pass in: `review(previous=reviews.a)`. The step tells a first pass from a later one by that file being absent, never by a counter it is not given.

@@ -7,8 +7,11 @@ import copy
 import io
 import json
 import os
+import pathlib
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1234,7 +1237,9 @@ class StartTest(RunbookTestCase):
         os.makedirs(self.run_dir)
         with open(os.path.join(self.run_dir, 'state.json'), 'w') as f:
             json.dump({'runbook': 'x', 'status': 'running', 'inputs': {}, 'sections': []}, f)
-        self.assertIn('is format 1, and agent_runbooks.py 2.0.0 reads format 2', self.fails(self.rb))
+        self.assertIn(
+            f'is format 1, and agent_runbooks.py {agent_runbooks.__version__} reads format 2', self.fails(self.rb)
+        )
 
 
 class InputsTest(RunbookTestCase):
@@ -2363,11 +2368,17 @@ class DeclarationTest(RunbookTestCase):
         strong, _ = executors(rb)
         if kind == 'step':
             rb.step(name, executor=strong, prompt='prompts/a.md', **kwargs)
+        elif kind == 'code':
+            rb.code(name, run=lambda ctx: {'status': 'done'}, **kwargs)
         else:
             rb.human(name, question='Proceed?', **kwargs)
 
     def test_collection_parameters_refuse_strings_at_declaration(self) -> None:
-        for kind, parameters in (('step', ('inputs', 'reads', 'writes')), ('human', ('choices',))):
+        for kind, parameters in (
+            ('step', ('inputs', 'reads', 'writes')),
+            ('code', ('reads', 'writes')),
+            ('human', ('choices',)),
+        ):
             for parameter in parameters:
                 for value in ('file.md', ''):
                     with self.subTest(kind=kind, parameter=parameter, value=value):
@@ -2379,8 +2390,8 @@ class DeclarationTest(RunbookTestCase):
                         self.assertEqual(rb.steps, {})
 
     def test_duplicate_names_do_not_replace_the_first_declaration(self) -> None:
-        for first in ('step', 'human'):
-            for second in ('step', 'human'):
+        for first in ('step', 'code', 'human'):
+            for second in ('step', 'code', 'human'):
                 with self.subTest(first=first, second=second):
                     rb = self.runbook(lambda rb: None)
                     self.declare(rb, first, 'work')
@@ -2410,6 +2421,24 @@ class DeclarationTest(RunbookTestCase):
             ('step', 'work', {'side_effects': 1}, TypeError, "step 'work': side_effects takes strings, got 1"),
             ('human', 'ask', {'choices': [1]}, TypeError, "step 'ask': choices takes strings, got 1"),
             ('human', 'ask', {'writes': 2}, TypeError, "step 'ask': writes takes strings, got 2"),
+            ('code', 'c/d', {}, ValueError, "step 'c/d': the name must be letters, digits, _ . -"),
+            ('code', 'tests', {'reply': {'status': str}}, ValueError, "step 'tests': reply field 'status' is reserved"),
+            (
+                'code',
+                'tests',
+                {'reply': {'passed': set}},
+                TypeError,
+                "step tests: reply field 'passed' is <class 'set'>",
+            ),
+            ('code', 'tests', {'reads': [5]}, TypeError, "step 'tests': reads takes strings, got 5"),
+            ('code', 'tests', {'side_effects': 1}, TypeError, "step 'tests': side_effects takes strings, got 1"),
+            (
+                'code',
+                'tests',
+                {'writes': ['tests.md', 'tests.code.log']},
+                ValueError,
+                "step 'tests': writes tests.code.log, the name of the call's own log",
+            ),
         ]
         for kind, name, kwargs, error, message in cases:
             with self.subTest(message=message):
@@ -2424,6 +2453,65 @@ class DeclarationTest(RunbookTestCase):
         with self.assertRaisesRegex(TypeError, "step 'ask': question takes strings, got None"):
             rb.human('ask', question=None)  # type: ignore[arg-type]
         self.assertEqual(rb.steps, {})
+
+    def test_a_code_step_takes_a_plain_function(self) -> None:
+        def generator(ctx):
+            yield
+
+        async def coroutine(ctx):
+            return {'status': 'done'}
+
+        async def async_generator(ctx):
+            yield {'status': 'done'}
+
+        cases = [
+            (generator, 'a generator function'),
+            (coroutine, 'a coroutine function'),
+            (async_generator, 'an async generator function'),
+            ('tests.sh', "'tests.sh'"),
+            (None, 'None'),
+        ]
+        rb = self.runbook(lambda rb: None)
+        for run, kind in cases:
+            with self.subTest(kind=kind):
+                with self.assertRaises(TypeError) as caught:
+                    rb.code('tests', run=run)  # type: ignore[arg-type]
+                self.assertEqual(
+                    str(caught.exception), f"step 'tests': run is {kind}, not a plain function that returns the result"
+                )
+        self.assertEqual(rb.steps, {})
+
+        class GeneratorRunner:
+            def __call__(self, ctx):
+                yield
+
+        class CoroutineRunner:
+            async def __call__(self, ctx):
+                return {'status': 'done'}
+
+        class AsyncGeneratorRunner:
+            async def __call__(self, ctx):
+                yield {'status': 'done'}
+
+        objects = [
+            (GeneratorRunner(), 'a generator function'),
+            (CoroutineRunner(), 'a coroutine function'),
+            (AsyncGeneratorRunner(), 'an async generator function'),
+        ]
+        for run, kind in objects:
+            with self.subTest(object=kind):
+                with self.assertRaises(TypeError) as caught:
+                    rb.code('tests', run=run)
+                self.assertEqual(
+                    str(caught.exception), f"step 'tests': run is {kind}, not a plain function that returns the result"
+                )
+        self.assertEqual(rb.steps, {})
+
+        class Runner:
+            def __call__(self, ctx):
+                return {'status': 'done'}
+
+        self.assertIsInstance(rb.code('tests', run=Runner()), agent_runbooks.CodeStep)
 
     def test_a_step_takes_an_executor_this_runbook_returned(self) -> None:
         rb = self.runbook(lambda rb: None)
@@ -2625,6 +2713,852 @@ class ShellCommandTest(RunbookTestCase):
             f"when it finishes: uv run {self.here}/flow.py {self.run_dir} reply main/work '<the last JSON object of its message>'",
             self.start(rb),
         )
+
+
+# ---------- code steps ----------
+
+
+def dead_pid() -> int:
+    """The pid of a process that has ended and been reaped."""
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait()
+    return child.pid
+
+
+def linear_code(rb: Runbook, step: agent_runbooks.CodeStep) -> None:
+    """A flow of one code call that ends failed with its reason when the call fails."""
+
+    @rb.flow
+    def main(ctx):
+        try:
+            yield step()
+        except StepFailed as e:
+            return end('failed', e.reason)
+        return end('ready')
+
+
+class CodeStepTest(RunbookTestCase):
+    """Code steps run in-process: a function counts its runs in <root>/runs-<name>."""
+
+    def runs(self, name: str) -> int:
+        try:
+            with open(os.path.join(self.root, f'runs-{name}')) as f:
+                return len(f.read())
+        except FileNotFoundError:
+            return 0
+
+    def count(self, name: str) -> None:
+        with open(os.path.join(self.root, f'runs-{name}'), 'a') as f:
+            f.write('.')
+
+    def code(self, rb: Runbook, name: str, result: Any = None, **kwargs: Any) -> agent_runbooks.CodeStep:
+        """A code step whose function counts its run and returns result, or {'status': 'done'}."""
+
+        def run(ctx, **_):
+            self.count(name)
+            return {'status': 'done'} if result is None else result
+
+        return rb.code(name, run=run, **kwargs)
+
+    def dies(self, rb: Runbook, *args: str) -> None:
+        """Runs a command whose code step ends the process: KeyboardInterrupt goes through main."""
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            rb.main(['flow.py', self.run_dir, *args])
+
+    def log_of(self, label: str) -> str:
+        with open(self.record(label)['log']) as f:
+            return f.read()
+
+    def test_a_chain_runs_in_one_command(self) -> None:
+        def declare(rb: Runbook) -> None:
+            first = self.code(rb, 'first', {'status': 'done', 'n': 2}, reply={'n': int}, writes=['first.md'])
+
+            def double(ctx, n):
+                with open(ctx.writes['second.md'], 'w') as f:
+                    f.write(f'{n * 2}\n')
+                return {'status': 'done', 'n': n * 2}
+
+            second = rb.code('second', run=double, reply={'n': int}, writes=['second.md', 'unwritten.md'])
+            third = self.code(rb, 'third')
+
+            @rb.flow
+            def main(ctx):
+                a = yield first()
+                b = yield second(n=a.n)
+                yield third()
+                return end('ready', f'n={b.n}, read <run>/second.md')
+
+        rb = self.runbook(declare)
+        with mock.patch.object(agent_runbooks.Replay, 'run', autospec=True, side_effect=agent_runbooks.Replay.run) as r:
+            out = self.start(rb)
+        self.assertEqual(r.call_count, 4)
+        self.assertEqual(
+            out.strip(),
+            f'end: ready (after `main/third`). The run is over. Report to the human: status ready, '
+            f'run directory {self.run_dir}, n=4, read {self.run_dir}/01-second.md.',
+        )
+        pid = os.getpid()
+        self.assertEqual(
+            self.progress().split('## Log\n\n')[1],
+            f'- main/first: started (pid {pid})\n'
+            '- main/first: {"status": "done", "n": 2} (did not write first.md)\n'
+            f'- main/second: started (pid {pid})\n'
+            '- main/second: {"status": "done", "n": 4} (did not write unwritten.md)\n'
+            f'- main/third: started (pid {pid})\n'
+            '- main/third: {"status": "done"}\n'
+            '- end: ready (after `main/third`)\n',
+        )
+        self.assertEqual(
+            self.record('main/second'),
+            {
+                'id': 'main/second',
+                'attempt': 1,
+                'kind': 'code',
+                'step': 'second',
+                'status': 'done',
+                'reply': {'n': 4},
+                'note': None,
+                'inputs': {'n': 2},
+                'files_in': {},
+                'files': {'second.md': f'{self.run_dir}/01-second.md'},
+                'schema': agent_runbooks.reply_schema({'n': int}),
+                'writes': {
+                    'second.md': f'{self.run_dir}/01-second.md',
+                    'unwritten.md': f'{self.run_dir}/01-unwritten.md',
+                },
+                'pid': pid,
+                'log': f'{self.run_dir}/01-second.code.log',
+                'started_at': '2026-10-03T10:02:00Z',
+                'ended_at': '2026-10-03T10:03:00Z',
+            },
+        )
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, 'schemas')))
+        self.call(rb)
+        self.assertEqual([self.runs('first'), self.runs('third')], [1, 1])
+
+    def test_the_result_is_checked(self) -> None:
+        cycle: dict[str, Any] = {'status': 'done', 'passed': True}
+        cycle['self'] = cycle
+        cases = [
+            ({'status': 'done'}, "no field 'passed'"),
+            ({'status': 'done', 'passed': 'yes'}, 'field \'passed\' must be boolean, got "yes"'),
+            ({'status': 'done', 'passed': True, 'seen': {1, 2}}, 'Object of type set is not JSON serializable'),
+            ({'status': 'done', 'passed': True, 'at': pathlib.Path('/x')}, 'is not JSON serializable'),
+            (cycle, 'Circular reference detected'),
+            ({'status': 'done', 'passed': True, 'rate': float('nan')}, 'Out of range float values are not JSON'),
+            ({'status': 'done', 'passed': True, 'map': {1: 'a', '1': 'b'}}, 'a key of a dict is not a string'),
+            ([{'status': 'done'}], 'list, not a dict'),
+            (None, 'NoneType, not a dict'),
+            ({'passed': True}, "no field 'status'"),
+            ({'status': 'ok'}, 'field \'status\' must be one of done, failed, blocked, got "ok"'),
+            (
+                {'status': 'done', 'passed': True, 'file': b'caf\xff'.decode('utf-8', 'surrogateescape')},
+                "a string is not valid UTF-8: 'utf-8' codec can't encode character '\\udcff'",
+            ),
+        ]
+        for result, problem in cases:
+            with self.subTest(problem=problem):
+                self.run_dir = os.path.join(self.root, f'run-{len(os.listdir(self.root))}')
+
+                def declare(rb: Runbook, result: Any = result) -> None:
+                    tests = rb.code('tests', run=lambda ctx: result, reply={'passed': bool})
+
+                    @rb.flow
+                    def main(ctx):
+                        try:
+                            yield tests()
+                        except StepFailed as e:
+                            return end('failed', e.reason)
+                        return end('ready')
+
+                out = self.start(self.runbook(declare))
+                self.assertEqual(self.record('main/tests')['status'], 'failed')
+                reason = self.record('main/tests')['reply']['reason']
+                self.assertTrue(reason.startswith('invalid result: '), reason)
+                self.assertIn(problem, reason)
+                self.assertIn(reason, out)
+
+    def test_a_failure_is_the_calls_reason(self) -> None:
+        def declare(rb: Runbook) -> None:
+            def raises_step_failed(ctx):
+                raise StepFailed('3 tests fail')
+
+            def blocks(ctx):
+                raise StepFailed(reply={'status': 'blocked', 'reason': 'no network', 'tried': 2})
+
+            def crashes(ctx):
+                print('before the crash')
+                return {'status': 'done', 'value': 1 / 0}
+
+            def nothing(ctx):
+                return {'status': 'failed', 'reason': None}
+
+            def exits(ctx):
+                sys.exit(3)
+
+            steps = [
+                rb.code('step-failed', run=raises_step_failed),
+                rb.code('blocked', run=blocks),
+                rb.code('crash', run=crashes),
+                rb.code('nothing', run=nothing),
+                rb.code('exits', run=exits),
+            ]
+
+            @rb.flow
+            def main(ctx):
+                reasons = []
+                for step in steps:
+                    try:
+                        yield step()
+                    except StepFailed as e:
+                        reasons.append(f'{e.status} {e.reason}')
+                return end('ready', '; '.join(reasons))
+
+        out = self.start(self.runbook(declare))
+        self.assertIn(
+            'failed 3 tests fail; blocked no network; failed ZeroDivisionError: division by zero; failed no reason given; '
+            'failed SystemExit: 3',
+            out,
+        )
+        self.assertIn('sys.exit(3)', self.log_of('main/exits'))
+        self.assertEqual(self.record('main/blocked')['reply'], {'reason': 'no network', 'tried': 2})
+        log = self.log_of('main/crash')
+        self.assertTrue(log.startswith('before the crash\nTraceback (most recent call last):\n'), log)
+        self.assertIn("return {'status': 'done', 'value': 1 / 0}", log)
+        self.assertNotIn('agent_runbooks.py', log)
+        self.assertTrue(log.endswith('ZeroDivisionError: division by zero\n'), log)
+        self.assertEqual(self.log_of('main/step-failed'), '')
+
+    def test_output_goes_to_the_log_and_the_process_is_restored(self) -> None:
+        here = os.getcwd()
+        before = [os.fstat(fd) for fd in (0, 1, 2)]
+        streams = sys.stdin, sys.stdout, sys.stderr
+
+        def declare(rb: Runbook) -> None:
+            def noisy(ctx):
+                print('printed')
+                print('to stderr', file=sys.stderr)
+                stdin = sys.stdin.read()
+                subprocess.run([sys.executable, '-c', 'import sys; print("child read", repr(sys.stdin.read()))'])
+                subprocess.run([sys.executable, '-c', 'import sys; sys.stderr.write("child stderr\\n")'])
+                os.chdir(self.root)
+                return {'status': 'done', 'stdin': stdin}
+
+            step = rb.code('noisy', run=noisy, reply={'stdin': str})
+
+            @rb.flow
+            def main(ctx):
+                yield step()
+                return end('ready')
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(self.runbook(declare).main(['flow.py', self.run_dir, 'start', '{"repo": "/repo"}']), 0)
+        self.assertTrue(out.getvalue().startswith('end: ready'), out.getvalue())
+        self.assertEqual(err.getvalue(), '')
+        self.assertEqual(self.log_of('main/noisy'), "printed\nto stderr\nchild read ''\nchild stderr\n")
+        self.assertEqual(self.record('main/noisy')['reply'], {'stdin': ''})
+        self.assertEqual(os.getcwd(), here)
+        self.assertEqual((sys.stdin, sys.stdout, sys.stderr), streams)
+        after = [os.fstat(fd) for fd in (0, 1, 2)]
+        self.assertEqual([(s.st_dev, s.st_ino) for s in after], [(s.st_dev, s.st_ino) for s in before])
+
+    def test_text_that_is_not_utf8_is_escaped_in_the_log(self) -> None:
+        name = b'caf\xff'.decode('utf-8', 'surrogateescape')
+
+        def declare(rb: Runbook) -> None:
+            def lists(ctx):
+                print(name)
+                return {'status': 'done'}
+
+            def fails(ctx):
+                raise FileNotFoundError(name)
+
+            def step_failed(ctx):
+                raise StepFailed(name)
+
+            steps = [rb.code('lists', run=lists), rb.code('fails', run=fails), rb.code('step-failed', run=step_failed)]
+
+            @rb.flow
+            def main(ctx):
+                reasons = []
+                for step in steps:
+                    try:
+                        yield step()
+                    except StepFailed as e:
+                        reasons.append(e.reason)
+                return end('ready', '; '.join(reasons))
+
+        out = self.start(self.runbook(declare))
+        self.assertTrue(out.startswith('end: ready'), out)
+        self.assertIn('FileNotFoundError: caf\\udcff; caf\\udcff', out)
+        self.assertEqual(self.log_of('main/lists'), 'caf\\udcff\n')
+        self.assertIn('main/fails: {"status": "failed", "reason": "FileNotFoundError: caf\\\\udcff"}', self.progress())
+
+    def test_a_failure_around_the_function_fails_the_call(self) -> None:
+        os.makedirs(os.path.join(self.run_dir, '00-tests.code.log'))
+        out = self.start(self.runbook(lambda rb: linear_code(rb, self.code(rb, 'tests'))))
+        self.assertEqual(self.record('main/tests')['status'], 'failed')
+        self.assertTrue(self.record('main/tests')['reply']['reason'].startswith('IsADirectoryError: '), out)
+        self.assertEqual(self.runs('tests'), 0)
+        self.assertTrue(out.startswith('end: failed'), out)
+
+    def test_keyword_arguments_are_the_flows_objects(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            review = rb.step('review', executor=strong, prompt='prompts/a.md', writes=['review.md'], reply={'n': int})
+
+            def inspect_results(ctx, r, options, plain):
+                seen.update(address=address(r), files=files(r), n=r.n, plain=plain)
+                options['added'] = True
+                options['nested'].append(3)
+                return {'status': 'done'}
+
+            check = rb.code('check', run=inspect_results)
+            narrow = rb.code('narrow', run=lambda ctx: {'status': 'done'})
+
+            @rb.flow
+            def main(ctx):
+                r = yield review()
+                yield check(r=r, options={'nested': [1, 2]}, plain='text')
+                try:
+                    yield narrow(unexpected=1)
+                except StepFailed as e:
+                    return end('failed', e.reason)
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        out = self.reply(rb, 'main/review', n=3)
+        self.assertEqual(
+            seen,
+            {
+                'address': 'main/review',
+                'files': {'review.md': f'{self.run_dir}/00-review.md'},
+                'n': 3,
+                'plain': 'text',
+            },
+        )
+        record = self.record('main/check')
+        self.assertEqual(record['inputs'], {'r.n': 3, 'options': {'nested': [1, 2]}, 'plain': 'text'})
+        self.assertEqual(record['files_in'], {'r/review.md': f'{self.run_dir}/00-review.md'})
+        self.assertRegex(out, r"TypeError: \S*<lambda>\(\) got an unexpected keyword argument 'unexpected'")
+        self.assertIn('TypeError', self.log_of('main/narrow'))
+
+    def test_the_context(self) -> None:
+        contexts: list[dict[str, Any]] = []
+
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            notes = rb.step('notes', executor=strong, prompt='prompts/a.md', writes=['notes.md'])
+
+            def look(ctx, **kwargs):
+                contexts.append(
+                    {
+                        'inputs': dict(vars(ctx.inputs)),
+                        'run': ctx.run,
+                        'repo': ctx.repo,
+                        'reads': ctx.reads,
+                        'writes': ctx.writes,
+                        'item': None if ctx.item is None else vars(ctx.item),
+                        'log': ctx.log,
+                        'attempt': ctx.attempt,
+                        'address': ctx.address,
+                    }
+                )
+                ctx.inputs.repo = 'changed'
+                return {'status': 'done'}
+
+            check = rb.code('check', run=look, reads=['notes.md', 'brief.md', 'working tree'], writes=['out.md'])
+
+            @rb.flow
+            def main(ctx):
+                yield check()
+                yield notes()
+                yield foreach('items', over='items.json', body=check(), max_concurrent=1)
+                return end('ready', ctx.inputs.repo)
+
+        rb = self.runbook(declare, rounds=2)
+        os.makedirs(self.run_dir)
+        self.write_input('items.json', [{'key': 'a', 'title': 'first'}])
+        self.start(rb, rounds=3)
+        out = self.reply(rb, 'main/notes')
+        self.assertIn('Report to the human: status ready, run directory', out)
+        self.assertIn(', /repo.', out)
+        reads = {'notes.md': None, 'brief.md': f'{self.run_dir}/brief.md'}
+        self.assertEqual(
+            contexts,
+            [
+                {
+                    'inputs': {'repo': '/repo', 'rounds': 3},
+                    'run': self.run_dir,
+                    'repo': '/repo',
+                    'reads': reads,
+                    'writes': {'out.md': f'{self.run_dir}/00-out.md'},
+                    'item': None,
+                    'log': f'{self.run_dir}/00-check.code.log',
+                    'attempt': 1,
+                    'address': 'main/check',
+                },
+                {
+                    'inputs': {'repo': '/repo', 'rounds': 3},
+                    'run': self.run_dir,
+                    'repo': '/repo',
+                    'reads': {**reads, 'notes.md': f'{self.run_dir}/01-notes.md'},
+                    'writes': {'out.md': f'{self.run_dir}/04-out.md'},
+                    'item': {'key': 'a', 'title': 'first'},
+                    'log': f'{self.run_dir}/04-check.code.log',
+                    'attempt': 1,
+                    'address': 'main/items[a]/check',
+                },
+            ],
+        )
+
+    def test_a_failing_group_starts_no_sibling_code_call(self) -> None:
+        def declare(rb: Runbook) -> None:
+            boom = self.code(rb, 'boom', {'status': 'failed', 'reason': 'boom'})
+            other = self.code(rb, 'other')
+
+            @rb.flow
+            def main(ctx):
+                yield parallel('g', a=boom(), b=other())
+                return end('ready')
+
+        out = self.start(self.runbook(declare))
+        self.assertTrue(out.startswith('end: failed (`main/g/a` failed: boom)'), out)
+        self.assertEqual([self.runs('boom'), self.runs('other')], [1, 0])
+        self.assertEqual(
+            [(c['id'], c['status']) for c in self.state()['calls']], [('main/g', 'failed'), ('main/g/a', 'failed')]
+        )
+
+    def parallel_with_an_agent(self, rb: Runbook) -> None:
+        strong, _ = executors(rb)
+        review = rb.step('review', executor=strong, prompt='prompts/a.md')
+        flag = os.path.join(self.root, 'die')
+
+        def slow(ctx):
+            self.count('slow')
+            if os.path.exists(flag):
+                os.remove(flag)
+                raise KeyboardInterrupt
+            return {'status': 'done', 'attempt': ctx.attempt}
+
+        tests = rb.code('tests', run=slow)
+
+        @rb.flow
+        def main(ctx):
+            yield parallel('p', a=tests(), b=review())
+            return end('ready')
+
+    def test_a_launch_is_recorded_and_printed_after_the_code(self) -> None:
+        rb = self.runbook(self.parallel_with_an_agent)
+        out = self.start(rb)
+        self.assertEqual(self.launched(out), ['main/p/b'])
+        self.assertEqual(
+            [(c['id'], c['kind'], c['status'], c['started_at']) for c in self.state()['calls']],
+            [
+                ('main/p', 'parallel', 'running', '2026-10-03T10:00:00Z'),
+                ('main/p/a', 'code', 'done', '2026-10-03T10:01:00Z'),
+                ('main/p/b', 'step', 'running', '2026-10-03T10:03:00Z'),
+            ],
+        )
+        self.assertIn(f'Read {self.here}/prompts/common.md', self.messages['main/p/b'][0])
+        self.assertIn(f'reply schema: {self.run_dir}/schemas/02-review.json', self.messages['main/p/b'])
+        log = self.progress().split('## Log\n\n')[1]
+        self.assertEqual(
+            log,
+            f'- main/p/a: started (pid {os.getpid()})\n- main/p/a: {{"status": "done", "attempt": 1}}\n- main/p/b: launched\n',
+        )
+
+    def test_owner_lost_in_this_process_opens_the_next_attempt(self) -> None:
+        rb = self.runbook(self.parallel_with_an_agent)
+        open(os.path.join(self.root, 'die'), 'w').close()
+        self.dies(rb, 'start', '{"repo": "/repo"}')
+        self.assertEqual(
+            [(c['id'], c['status'], c['pid']) for c in self.state()['calls'] if c['kind'] == 'code'],
+            [('main/p/a', 'running', os.getpid())],
+        )
+        self.assertEqual(len(self.state()['calls']), 2)
+        self.assertIn(
+            'reply: call main/p/a is a code step; flow.py runs it itself',
+            self.fails(rb, 'reply', 'main/p/a', '{"status": "done"}'),
+        )
+        self.assertIn('interrupted: call main/p/a is a code step', self.fails(rb, 'interrupted', 'main/p/a'))
+        out = self.call(rb)
+        self.assertEqual(self.launched(out), ['main/p/b'])
+        self.assertEqual(self.runs('slow'), 2)
+        self.assertEqual(self.record('main/p/a')['status'], 'interrupted')
+        self.assertEqual(self.record('main/p/a')['note'], 'owner process lost')
+        self.assertEqual(self.record('main/p/a@2')['status'], 'done')
+        self.assertEqual(self.record('main/p/a@2')['reply'], {'attempt': 2})
+        self.assertIn('- main/p/a: interrupted (owner process lost)\n- main/p/a@2: started', self.progress())
+
+    def lost_twice(self, rb: Runbook) -> None:
+        crash = self.code(rb, 'crash')
+
+        @rb.flow
+        def main(ctx):
+            try:
+                yield crash()
+            except StepFailed as e:
+                return end('failed', e.reason)
+            return end('ready')
+
+    def lose(self, label: str) -> None:
+        """Rewrites the running record of label as owned by a process that is gone."""
+        state = self.state()
+        address, _, attempt = label.partition('@')
+        record = next(c for c in state['calls'] if c['id'] == address and c['attempt'] == int(attempt or 1))
+        record['status'], record['pid'] = 'running', dead_pid()
+        record['reply'] = record['ended_at'] = None
+        with open(os.path.join(self.run_dir, 'state.json'), 'w') as f:
+            json.dump(state, f)
+
+    def test_owner_lost_twice_fails_the_call(self) -> None:
+        rb = self.runbook(self.lost_twice)
+        self.start(rb)
+        self.lose('main/crash')
+        out = self.call(rb)
+        self.assertTrue(out.startswith('end: ready'), out)
+        self.assertEqual(self.record('main/crash@2')['status'], 'done')
+        self.lose('main/crash@2')
+        out = self.call(rb)
+        reason = 'the owner process disappeared without saving a result twice'
+        self.assertEqual(
+            self.first_line(out),
+            f'end: failed (after `main/crash`). The run is over. Report to the human: status failed, run directory {self.run_dir}, {reason}.',
+        )
+        self.assertEqual(self.record('main/crash@2')['status'], 'failed')
+        self.assertEqual(self.record('main/crash@2')['reply'], {'reason': reason})
+        self.assertEqual([c['attempt'] for c in self.state()['calls']], [1, 2])
+        self.assertEqual(self.runs('crash'), 2)
+        self.assertIn(f'- main/crash@2: {{"status": "failed", "reason": "{reason}"}}', self.progress())
+
+    def test_owner_lost_with_side_effects_asks_the_human(self) -> None:
+        def declare(rb: Runbook) -> None:
+            merge = self.code(rb, 'merge', side_effects='merges into main')
+
+            @rb.flow
+            def main(ctx):
+                yield merge()
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        self.lose('main/merge')
+        # Not until a command has closed it: the advance after the relaunch would close it and ask again.
+        before = self.state(), self.progress()
+        self.assertIn('relaunch: call main/merge is running', self.fails(rb, 'relaunch', 'main/merge'))
+        self.assertEqual((self.state(), self.progress()), before)
+        out = self.call(rb)
+        self.assertEqual(
+            self.first_line(out),
+            f'ask the human: step `main/merge` has side effects and ended interrupted. On yes: {self.cmd} '
+            f"{self.run_dir} relaunch main/merge. On no: {self.cmd} {self.run_dir} log '<their decision>' and stop.",
+        )
+        self.assertEqual(self.runs('merge'), 1)
+        out = self.call(rb, 'relaunch', 'main/merge')
+        self.assertTrue(out.startswith('end: ready'), out)
+        self.assertEqual(self.runs('merge'), 2)
+        self.assertEqual(self.record('main/merge')['note'], "relaunched on the human's yes")
+        # The relaunch resets the count: losing @2 asks again rather than failing.
+        self.lose('main/merge@2')
+        self.assertIn('relaunch main/merge@2', self.call(rb))
+
+    def test_a_failed_side_effect_code_step_asks_the_human(self) -> None:
+        def declare(rb: Runbook) -> None:
+            push = self.code(rb, 'push', {'status': 'failed', 'reason': 'rejected'}, side_effects='pushes')
+
+            @rb.flow
+            def main(ctx):
+                yield push()
+                return end('ready')
+
+        rb = self.runbook(declare)
+        out = self.start(rb)
+        self.assertTrue(out.startswith('ask the human: step `main/push` has side effects and ended failed (rejected)'))
+        self.call(rb)
+        self.assertEqual(self.runs('push'), 1)
+
+    def test_start_checks_for_a_run_under_the_lock(self) -> None:
+        rb = self.runbook(linear)
+        acquire = agent_runbooks.RunLock.acquire
+
+        def another_start_won(lock: agent_runbooks.RunLock) -> None:
+            with open(os.path.join(self.run_dir, 'state.json'), 'w') as f:
+                f.write('{}')
+            acquire(lock)
+
+        with mock.patch.object(agent_runbooks.RunLock, 'acquire', another_start_won):
+            self.assertIn(
+                'holds a run, started by another command meanwhile', self.fails(rb, 'start', '{"repo": "/repo"}')
+            )
+        with open(os.path.join(self.run_dir, 'state.json')) as f:
+            self.assertEqual(f.read(), '{}')
+
+    def test_a_command_without_a_run_creates_nothing(self) -> None:
+        rb = self.runbook(linear)
+        self.assertIn(f'{self.run_dir}/state.json: not found', self.fails(rb))
+        self.assertFalse(os.path.exists(self.run_dir))
+        os.makedirs(self.run_dir)
+        self.assertIn(f'{self.run_dir}/state.json: not found', self.fails(rb))
+        self.assertEqual(os.listdir(self.run_dir), [])
+
+    def test_check_needs_common_md_only_for_agent_steps(self) -> None:
+        def declare(rb: Runbook) -> None:
+            tests = self.code(rb, 'tests')
+
+            @rb.flow
+            def main(ctx):
+                yield tests()
+                return end('ready')
+
+        os.remove(os.path.join(self.here, 'prompts', 'common.md'))
+        self.assertEqual(self.check(self.runbook(declare)), (0, 'flow.py is consistent.\n'))
+        self.assertEqual(self.check(self.runbook(linear)), (1, 'prompts/common.md does not exist\n'))
+
+    @unittest.skipUnless(os.environ.get('AGENT_RUNBOOKS_MEASURE'), 'a measurement: AGENT_RUNBOOKS_MEASURE=1')
+    def test_measure_a_chain_of_200_code_calls_on_2000_recorded_calls(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md')
+            noop = rb.code('noop', run=lambda ctx: {'status': 'done'})
+
+            @rb.flow
+            def main(ctx):
+                for _ in range(2000):
+                    yield work()
+                for _ in range(200):
+                    yield noop()
+                return end('ready')
+
+        rb = self.runbook(declare)
+        self.start(rb)
+        state = agent_runbooks.RunState.load(self.run_dir)
+        state.calls = []
+        for n in range(1, 2001):
+            address = 'main/work' + (f'#{n}' if n > 1 else '')
+            state.append(agent_runbooks.CallRecord(id=address, kind='step', step='work', status='done', reply={}))
+        state.save(self.run_dir)
+        began = time.perf_counter()
+        out = self.call(rb)
+        elapsed = time.perf_counter() - began
+        self.assertTrue(out.startswith('end: ready'), out)
+        self.assertEqual(len(self.state()['calls']), 2200)
+        print(
+            f'\n200 code calls on 2,000 recorded calls in one command: {elapsed:.2f} s, '
+            f'{elapsed / 200 * 1000:.1f} ms per call (Python {sys.version.split()[0]}, {sys.platform})'
+        )
+
+
+class CodeProcessTest(unittest.TestCase):
+    """Code steps in real flow.py processes: what reaches stdout, and two commands of one run at once."""
+
+    FLOW = """
+import os
+import subprocess
+import sys
+import time
+
+from agent_runbooks import Runbook, end, parallel
+
+rb = Runbook()
+rb.inputs(repo=str)
+coder = rb.executor('coder', 'a subagent')
+review = rb.step('review', executor=coder, prompt='prompts/a.md')
+wait_b = rb.step('wait-b', executor=coder, prompt='prompts/a.md')
+wait_c = rb.step('wait-c', executor=coder, prompt='prompts/a.md')
+
+
+def count(ctx, name):
+    with open(os.path.join(ctx.inputs.repo, 'runs-' + name), 'a') as f:
+        f.write('.')
+
+
+def noisy(ctx):
+    count(ctx, 'noisy')
+    print('printed by the function')
+    subprocess.run(['echo', 'printed by a child'], check=True)
+    return {'status': 'done'}
+
+
+def block(ctx):
+    count(ctx, 'block')
+    while not os.path.exists(os.path.join(ctx.inputs.repo, 'release')):
+        time.sleep(0.02)
+    return {'status': 'done'}
+
+
+def quick(ctx):
+    count(ctx, 'quick')
+    return {'status': 'done'}
+
+
+noisy_step = rb.code('noisy', run=noisy)
+block_step = rb.code('block', run=block)
+quick_step = rb.code('quick', run=quick)
+
+
+def chain_b(ctx):
+    yield wait_b()
+    yield block_step()
+
+
+def chain_c(ctx):
+    yield wait_c()
+    yield quick_step()
+
+
+@rb.flow
+def main(ctx):
+    yield noisy_step()
+    yield parallel('p', a=review(), b=chain_b, c=chain_c)
+    return end('ready')
+
+
+if __name__ == '__main__':
+    raise SystemExit(rb.main())
+"""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = os.path.realpath(tmp.name)
+        here = os.path.join(self.root, 'runbook-processes')
+        os.makedirs(os.path.join(here, 'prompts'))
+        with open(os.path.join(here, 'flow.py'), 'w') as f:
+            f.write(self.FLOW)
+        shutil.copy(agent_runbooks.__file__, here)
+        self.flow = os.path.join(here, 'flow.py')
+        self.run_dir = os.path.join(self.root, 'run')
+
+    def flow_py(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, self.flow, self.run_dir, *args], capture_output=True, text=True, timeout=30, check=True
+        )
+
+    def calls(self) -> dict[str, dict[str, Any]]:
+        with open(os.path.join(self.run_dir, 'state.json')) as f:
+            return {c['id'] + (f'@{c["attempt"]}' if c['attempt'] > 1 else ''): c for c in json.load(f)['calls']}
+
+    def runs(self, name: str) -> int:
+        with open(os.path.join(self.root, f'runs-{name}')) as f:
+            return len(f.read())
+
+    def test_two_commands_at_once(self) -> None:
+        out = self.flow_py('start', json.dumps({'repo': self.root}))
+        self.assertEqual(out.stderr, '')
+        self.assertTrue(out.stdout.startswith('3 steps to launch together, in one turn:\n'), out.stdout)
+        with open(self.calls()['main/noisy']['log']) as f:
+            self.assertEqual(f.read(), 'printed by the function\nprinted by a child\n')
+
+        reply = [sys.executable, self.flow, self.run_dir, 'reply']
+        a = subprocess.Popen([*reply, 'main/p/b/wait-b', '{"status": "done"}'], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(a.wait)
+        self.addCleanup(lambda: open(os.path.join(self.root, 'release'), 'w').close())
+        deadline = time.monotonic() + 20
+        while self.calls().get('main/p/b/block', {}).get('status') != 'running':
+            self.assertLess(time.monotonic(), deadline, 'process A never started the code step')
+            time.sleep(0.02)
+        self.assertEqual(self.calls()['main/p/b/block']['pid'], a.pid)
+
+        b = self.flow_py('reply', 'main/p/a', '{"status": "done"}')
+        self.assertEqual(
+            b.stdout,
+            'still running: `main/p/c/wait-c`\nrunning in another flow.py command, code steps: `main/p/b/block`\n',
+        )
+        c = self.flow_py('reply', 'main/p/c/wait-c', '{"status": "done"}')
+        self.assertEqual(c.stdout, 'running in another flow.py command, code steps: `main/p/b/block`\n')
+        self.assertEqual(self.calls()['main/p/c/quick']['status'], 'done')
+        self.assertIsNone(a.poll())
+
+        open(os.path.join(self.root, 'release'), 'w').close()
+        stdout, _ = a.communicate(timeout=30)
+        self.assertEqual(a.returncode, 0)
+        self.assertTrue(stdout.startswith('end: ready (after `main/p`)'), stdout)
+        calls = self.calls()
+        self.assertEqual(
+            {label: c['status'] for label, c in calls.items()},
+            {
+                'main/noisy': 'done',
+                'main/p': 'done',
+                'main/p/a': 'done',
+                'main/p/b/wait-b': 'done',
+                'main/p/c/wait-c': 'done',
+                'main/p/b/block': 'done',
+                'main/p/c/quick': 'done',
+            },
+        )
+        self.assertNotEqual(calls['main/p/c/quick']['pid'], a.pid)
+        self.assertEqual([self.runs('noisy'), self.runs('block'), self.runs('quick')], [1, 1, 1])
+
+    HELD_FLOW = """
+import sys
+
+from agent_runbooks import Runbook, end
+
+HELD = sys.stdout
+
+rb = Runbook()
+
+
+def held(ctx):
+    HELD.write('written to a stream held since import\\n')
+    print('printed by the function')
+    return {'status': 'done'}
+
+
+def after(ctx):
+    print('printed by the next call')
+    return {'status': 'done'}
+
+
+held_step = rb.code('held', run=held)
+after_step = rb.code('after', run=after)
+
+
+@rb.flow
+def main(ctx):
+    yield held_step()
+    yield after_step()
+    return end('ready')
+
+
+if __name__ == '__main__':
+    raise SystemExit(rb.main())
+"""
+
+    def run_held_flow(self, *prefix: str) -> subprocess.CompletedProcess[str]:
+        with open(self.flow, 'w') as f:
+            f.write(self.HELD_FLOW)
+        return subprocess.run(
+            [sys.executable, *prefix, self.flow, self.run_dir, 'start', '{}'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+
+    def assert_held_flow_logged(self, out: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(out.stderr, '')
+        self.assertTrue(out.stdout.startswith('end: ready (after `main/after`)'), out.stdout)
+        calls = self.calls()
+        self.assertEqual(
+            {label: c['status'] for label, c in calls.items()}, {'main/held': 'done', 'main/after': 'done'}
+        )
+        with open(calls['main/held']['log']) as f:
+            self.assertEqual(f.read(), 'printed by the function\nwritten to a stream held since import\n')
+        with open(calls['main/after']['log']) as f:
+            self.assertEqual(f.read(), 'printed by the next call\n')
+
+    def test_a_stream_held_since_import_writes_to_the_log(self) -> None:
+        self.assert_held_flow_logged(self.run_held_flow())
+
+    def test_a_command_with_stdin_closed(self) -> None:
+        close_stdin = 'import os, sys; os.close(0); os.execv(sys.executable, [sys.executable, *sys.argv[1:]])'
+        self.assert_held_flow_logged(self.run_held_flow('-c', close_stdin))
 
 
 if __name__ == '__main__':

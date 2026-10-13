@@ -81,7 +81,7 @@ if __name__ == '__main__':
     raise SystemExit(rb.main())
 ```
 
-The whole language: `rb.inputs`, `rb.executor`, `rb.step`, `rb.human`, `@rb.flow`, `yield`, `parallel`, `foreach`, `StepFailed`, `end`, `files`, `address`. Nothing else.
+The whole language: `rb.inputs`, `rb.executor`, `rb.step`, `rb.human`, `rb.code`, `@rb.flow`, `yield`, `parallel`, `foreach`, `StepFailed`, `end`, `files`, `address`. Nothing else.
 
 ### Declarations
 

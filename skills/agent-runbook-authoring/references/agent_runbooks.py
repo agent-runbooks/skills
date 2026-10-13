@@ -12,6 +12,8 @@ generator under @rb.flow, and ends with rb.main(). The orchestrator then talks t
     flow.py <run>                                  nothing new: print what is pending
     flow.py --check                                validate the declarations
 
+A code step runs inside whichever of these commands reaches it, so a command takes as long as the code it runs.
+
 <call> is the address flow.py printed with the launch or the question, such as main/review#2 or main/review@2.
 `answer` takes the human's words as a last argument, and a JSON object in place of the choice when the step
 declares reply fields. One argument may be `-` to read it from stdin, for text with quotes in it.
@@ -24,7 +26,7 @@ imports agent_runbooks the same way from a copy next to it and from the package.
 
 from __future__ import annotations
 
-__version__ = '2.0.0'
+__version__ = '2.1.0'
 
 import sys
 
@@ -48,6 +50,11 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args
 
 if TYPE_CHECKING:
     from typing import TypeAlias  # 3.10+; annotations are never evaluated at run time
+
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
 
 
 class FlowError(Exception):
@@ -107,11 +114,44 @@ class Context:
         self.inputs = SimpleNamespace(**copy.deepcopy(inputs))
 
 
+class CodeContext:
+    """What the function of a code step gets first. Every path is absolute.
+
+    inputs: the run's inputs, a copy. run: the run directory. repo: the `repo` input. reads: each name of the step's
+    `reads` to its file, None when absent. writes: each name of its `writes` to the file to write. item: the fields of
+    the innermost foreach item, a copy, or None outside a foreach. log: the call's own log, which takes its stdout and
+    stderr. attempt: 1, then 2 after its owner process was lost. address: the call's address, such as main/tests#2.
+    """
+
+    def __init__(
+        self,
+        *,
+        inputs: dict[str, Any],
+        run: str,
+        reads: dict[str, str | None],
+        writes: dict[str, str],
+        item: dict[str, Any],
+        log: str,
+        attempt: int,
+        address: str,
+    ) -> None:
+        self.inputs = SimpleNamespace(**copy.deepcopy(inputs))
+        self.run = run
+        repo = inputs.get('repo')
+        self.repo: str | None = os.path.abspath(repo) if isinstance(repo, str) else None
+        self.reads = dict(reads)
+        self.writes = dict(writes)
+        self.item: SimpleNamespace | None = SimpleNamespace(**copy.deepcopy(item)) if item else None
+        self.log = log
+        self.attempt = attempt
+        self.address = address
+
+
 @dataclass(frozen=True)
 class Call:
     """A step called in the flow: what `yield step(...)` hands the engine. inputs: the keyword arguments."""
 
-    step: Step | HumanStep
+    step: Step | HumanStep | CodeStep
     inputs: dict[str, Any]
     executor: Executor | str | None = None
 
@@ -328,8 +368,25 @@ class HumanStep:
         return None
 
 
-AnyStep: TypeAlias = 'Step | HumanStep'
+@dataclass(eq=False)
+class CodeStep:
+    """A step flow.py runs itself. Fields mirror the parameters of Runbook.code. Calling it is a call for the flow."""
+
+    name: str
+    run: Callable[..., dict[str, Any]]
+    reply: dict[str, Any] = field(default_factory=dict)
+    reads: list[str] = field(default_factory=list)
+    writes: list[str] = field(default_factory=list)
+    side_effects: str | None = None
+
+    def __call__(self, **inputs: Any) -> Call:
+        """A run of this step. inputs: the keyword arguments its function is called with."""
+        return Call(self, inputs)
+
+
+AnyStep: TypeAlias = 'Step | HumanStep | CodeStep'
 WORKING_TREE = 'working tree'
+CODE_LOG = '{step}.code.log'
 
 
 def _writes(step: AnyStep) -> list[str]:
@@ -341,13 +398,18 @@ def _writes(step: AnyStep) -> list[str]:
 # ---------- run state ----------
 
 FORMAT = 2
-Kind = Literal['step', 'human', 'parallel', 'foreach', 'item']
+Kind = Literal['step', 'human', 'code', 'parallel', 'foreach', 'item']
 CallStatus = Literal['running', 'waiting', 'done', 'failed', 'blocked', 'cancelled', 'interrupted']
 OPEN: tuple[CallStatus, ...] = ('running', 'waiting')
 REPLY_STATUSES = ('done', 'failed', 'blocked')
+# Records that run a step, as against the records of groups and items.
+LAUNCH_KINDS = ('step', 'human', 'code')
 NOTE_RELAUNCHED = "relaunched on the human's yes"
 # A side-effect step whose question its group's failure dropped: never relaunched, the question withdrawn.
 NOTE_CANCELLED = 'cancelled with its group'
+# A code call whose process ended without saving its result: the next command closes it with this note.
+NOTE_OWNER_LOST = 'owner process lost'
+LOST_TWICE = 'the owner process disappeared without saving a result twice'
 # How many times an executor is asked to correct a reply that did not pass the check before the step is failed.
 CORRECTIONS = 1
 
@@ -361,6 +423,7 @@ LAUNCH_KEYS = ('executor', 'reply', 'note', 'answer', 'inputs', 'files_in', 'fil
 KIND_KEYS: dict[str, tuple[str, ...]] = {
     'step': LAUNCH_KEYS,
     'human': LAUNCH_KEYS,
+    'code': ('reply', 'note', 'inputs', 'files_in', 'files', 'schema', 'writes', 'pid', 'log'),
     'parallel': ('branches',),
     'foreach': ('over', 'items', 'index', 'problem'),
     'item': ('fields', 'reply', 'reason', 'files'),
@@ -374,9 +437,10 @@ class CallRecord:
 
     A launch (kind step or human) holds the contract its executor was given: executor, inputs (the call's own),
     files_in (name to the path it was told, None for absent), writes and the reply schema. invalid_replies: what the
-    orchestrator passed that did not pass the check, as {'reply': raw, 'problem': ...}. A parallel records how each
-    branch ended; a foreach the file it read, its items frozen when reached, its index, or the problem with the file;
-    an item its fields and its outcome: reply (the body's return value), reason and files.
+    orchestrator passed that did not pass the check, as {'reply': raw, 'problem': ...}. A code call holds the same
+    contract minus the executor, plus the pid of the process that runs it and the path of its log. A parallel records
+    how each branch ended; a foreach the file it read, its items frozen when reached, its index, or the problem with
+    the file; an item its fields and its outcome: reply (the body's return value), reason and files.
     """
 
     id: str
@@ -403,6 +467,8 @@ class CallRecord:
     started_at: str | None = None
     ended_at: str | None = None
     invalid_replies: list[dict[str, str]] = field(default_factory=list)
+    pid: int | None = None
+    log: str | None = None
     # The record's place in state.json, which numbers its files. Not saved.
     position: int = -1
 
@@ -518,6 +584,75 @@ class RunState:
         return named
 
 
+class RunLock:
+    """<run>/state.lock, held by a command from loading state.json to saving it, and released while a code step runs.
+
+    The descriptor is not inherited by child processes, and the lock is released by an explicit unlock.
+    """
+
+    def __init__(self, run_dir: str) -> None:
+        self.run_dir = run_dir
+        self.fd: int | None = None
+
+    def acquire(self) -> None:
+        try:
+            fd = os.open(os.path.join(self.run_dir, 'state.lock'), os.O_RDWR | os.O_CREAT, 0o644)
+        except FileNotFoundError:
+            raise CommandError(f'{RunState.path(self.run_dir)}: not found') from None
+        if sys.platform == 'win32':
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    pass  # LK_LOCK gives up after ten seconds of trying
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        self.fd = fd
+
+    def release(self) -> None:
+        """Unlocks and closes; nothing when not held."""
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        if sys.platform == 'win32':
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _owner_gone(pid: int | None) -> bool:
+    """Whether the process that runs a code call is gone. This process runs one only between saving it as running
+    and saving its result, so its own pid on a running record is from an earlier command."""
+    return pid is None or pid <= 0 or pid == os.getpid() or not _alive(pid)
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process with this pid exists. A zombie counts as alive."""
+    if sys.platform == 'win32':
+        import ctypes
+
+        # use_last_error keeps the error of OpenProcess from being overwritten by ctypes' own calls.
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
+        try:
+            code = ctypes.c_ulong()
+            return not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class RunFiles:
     """Files in a run directory: a record writes <run>/<NN>-<name>, NN being its place in state.json."""
 
@@ -605,6 +740,8 @@ class Proposal:
     record: CallRecord
     item: dict[str, Any] = field(default_factory=dict)
     question: str = ''
+    # For a code call: the call as the flow yielded it, whose keyword arguments its function gets.
+    call: Call | None = None
 
 
 @dataclass
@@ -704,6 +841,7 @@ class Replay:
         self.files = RunFiles(run_dir)
         self.ctx = Context(state.inputs)
         self.latest: dict[str, CallRecord] = {}
+        self.attempts: dict[tuple[str, int], CallRecord] = {}
         self.under: dict[str, list[CallRecord]] = {}
         for record in state.calls:
             self._index(record)
@@ -737,6 +875,7 @@ class Replay:
 
     def _index(self, record: CallRecord) -> None:
         self.latest[record.id] = record
+        self.attempts[(record.id, record.attempt)] = record
         for i, char in enumerate(record.id):
             if char in '/[':
                 self.under.setdefault(record.id[:i], []).append(record)
@@ -805,7 +944,7 @@ class Replay:
             return self._parallel(request, frame.address(request.name), frame)
         if isinstance(request, Foreach):
             return self._foreach(request, frame.address(request.name), frame)
-        if isinstance(request, (Step, HumanStep)):
+        if isinstance(request, (Step, HumanStep, CodeStep)):
             raise FlowError(f'`{frame.path}` yields step `{request.name}` without calling it: yield {request.name}()')
         raise FlowError(f'`{frame.path}` yields {request!r}: a flow yields a step call, parallel(...) or foreach(...)')
 
@@ -813,11 +952,13 @@ class Replay:
 
     def _call(self, call: Call, address: str, frame: Frame) -> Outcome:
         step = call.step
-        kind: Kind = 'human' if isinstance(step, HumanStep) else 'step'
+        kind: Kind = 'human' if isinstance(step, HumanStep) else 'code' if isinstance(step, CodeStep) else 'step'
         record = self.latest.get(address)
         if record is None:
             return Pending(proposals=[self._propose(call, address, frame, 1)])
         self._expect(record, kind, step.name)
+        if record.status == 'running' and kind == 'code' and _owner_gone(record.pid):
+            return self._lost(call, record, frame)
         if record.status == 'running':
             return Pending(running=[record])
         if record.status == 'waiting':
@@ -827,21 +968,33 @@ class Replay:
         if record.status == 'done':
             frame.files.update(record.files)
             return Returned(_result(StepResult, copy.deepcopy(record.reply), address, record.files))
-        side_effects = isinstance(step, Step) and step.side_effects
+        side_effects = not isinstance(step, HumanStep) and step.side_effects
         if record.note == NOTE_RELAUNCHED or (record.status == 'interrupted' and not side_effects):
             return Pending(proposals=[self._propose(call, address, frame, record.attempt + 1)])
         if side_effects:
             return Pending(asks=[record])
         return Raised(StepFailed(id=address, reply={'status': record.status, **copy.deepcopy(record.reply or {})}))
 
+    def _lost(self, call: Call, record: CallRecord, frame: Frame) -> Outcome:
+        """A running code call whose process is gone: closed interrupted, then the next attempt or the human's question,
+        as an interruption. Lost twice in a row, it is closed failed instead."""
+        side_effects = isinstance(call.step, CodeStep) and call.step.side_effects
+        previous = self.attempts.get((record.id, record.attempt - 1))
+        if previous is not None and previous.note == NOTE_OWNER_LOST:
+            self._update(record, 'failed', reply={'reason': LOST_TWICE})
+            if side_effects:
+                return Pending(asks=[record])
+            return Raised(StepFailed(id=record.id, reply={'status': 'failed', 'reason': LOST_TWICE}))
+        self._update(record, 'interrupted', note=NOTE_OWNER_LOST)
+        if side_effects:
+            return Pending(asks=[record])
+        return Pending(proposals=[self._propose(call, record.id, frame, record.attempt + 1)])
+
     def _propose(self, call: Call, address: str, frame: Frame, attempt: int) -> Proposal:
         step = call.step
         if isinstance(step, HumanStep):
             record = CallRecord(id=address, attempt=attempt, kind='human', step=step.name, status='waiting')
             return Proposal(record, question=self.substitute(step.question, frame))
-        executor = step.executor if call.executor is None else self.rb.find_executor(call.executor)
-        if executor is None:
-            raise FlowError(f'`{address}`: executor {call.executor!r} is not declared in this flow.py')
         inputs: dict[str, Any] = {}
         passed: dict[str, str | None] = {}
         for key, value in call.inputs.items():
@@ -850,6 +1003,21 @@ class Replay:
         for name in step.reads:
             if name != WORKING_TREE:
                 files_in[name] = frame.resolve(name) if self.rb.is_output(name) else os.path.join(self.run_dir, name)
+        if isinstance(step, CodeStep):
+            record = CallRecord(
+                id=address,
+                attempt=attempt,
+                kind='code',
+                step=step.name,
+                status='running',
+                inputs=inputs,
+                files_in={**files_in, **passed},
+                schema=reply_schema(step.reply),
+            )
+            return Proposal(record, item=frame.item, call=call)
+        executor = step.executor if call.executor is None else self.rb.find_executor(call.executor)
+        if executor is None:
+            raise FlowError(f'`{address}`: executor {call.executor!r} is not declared in this flow.py')
         record = CallRecord(
             id=address,
             attempt=attempt,
@@ -998,7 +1166,7 @@ class Replay:
         """The item's entry in the index: key, status, reply, reason, and the files of its latest done launches."""
         files: dict[str, str] = {}
         for inner in self.under.get(record.id, []):
-            if inner.kind in ('step', 'human') and inner.status == 'done':
+            if inner.kind in LAUNCH_KINDS and inner.status == 'done':
                 files.update(inner.files)
         if isinstance(outcome, Returned):
             return _index_row(item['key'], 'done', reply=outcome.value, files=files)
@@ -1156,6 +1324,7 @@ TEXT = {
     'correct_then': 'when it answers: {command}',
     'correct_cannot': 'if your tool cannot send a message to a subagent that has finished: {command}',
     'still_running': 'still running: {labels}',
+    'code_elsewhere': 'running in another flow.py command, code steps: {labels}',
     'withdraw': 'withdraw the question `{label}`: its group failed; tell the human no answer is needed',
     'withdraw_ask': 'withdraw the question whether to relaunch step `{label}`: its group failed, and it is not '
     'relaunched; tell the human no answer is needed',
@@ -1258,9 +1427,12 @@ class Renderer:
         for proposal in opened:
             blocks.append(self._ask(proposal) if proposal.record.kind == 'human' else self._launch(proposal))
         tail: list[str] = []
-        running = [record for record in plan.running if id(record) not in new]
+        running = [record for record in plan.running if id(record) not in new and record.kind != 'code']
         if running:
             tail.append(TEXT['still_running'].format(labels=self._labels(running)))
+        code = [record for record in plan.running if record.kind == 'code']
+        if code:
+            tail.append(TEXT['code_elsewhere'].format(labels=self._labels(code)))
         if plan.idle and not opened:
             tail.append(TEXT['idle'])
         blocks.append(tail)
@@ -1442,9 +1614,10 @@ class Runbook:
         self.here = os.path.dirname(os.path.abspath(sys.argv[0]))
         # Set by `reply` when it asks the executor to correct its reply; printed before what the run does next.
         self._correcting: tuple[CallRecord, str] | None = None
-        # The launch `reply` or `interrupted` closed: if its group drops the question it raises, none was asked yet.
+        # Labels of the calls this command closed: if a group drops the question one raises, none was asked yet.
         # Holds for this command only: if its flow raises, the next command withdraws the question though none was asked.
-        self._closed: CallRecord | None = None
+        self._closed: set[str] = set()
+        self._lock: RunLock | None = None
         flow = os.path.join(self.here, os.path.basename(sys.argv[0]))
         # Under `uv run`, sys.executable is an environment in uv's cache, gone after `uv cache clean`.
         launcher = 'uv run' if 'UV' in os.environ else shlex.quote(sys.executable)
@@ -1560,6 +1733,47 @@ class Runbook:
         self.steps[name] = step
         return step
 
+    def code(
+        self,
+        name: str,
+        *,
+        run: Callable[..., dict[str, Any]],
+        reply: dict[str, Any] | None = None,
+        reads: Iterable[str] = (),
+        writes: Iterable[str] = (),
+        side_effects: str | None = None,
+    ) -> CodeStep:
+        """A step flow.py runs itself, inside the command that reaches it. The flow calls it with `r = yield step(...)`.
+
+        run: a plain function run(ctx, **kwargs), ctx a CodeContext and kwargs the call's keyword arguments. It returns
+        a dict with `status` and the reply fields, or raises: StepFailed fails the call with its reason, any other
+        exception fails it with the exception's type and message. reply, reads, writes and side_effects: as for step.
+        """
+        self._check_declaration(name, reads=reads, writes=writes)
+        if not callable(run):
+            raise TypeError(f'step {name!r}: run is {run!r}, not a plain function that returns the result')
+        # A callable object is judged by its __call__.
+        for test, kind in (
+            (inspect.isgeneratorfunction, 'a generator function'),
+            (inspect.iscoroutinefunction, 'a coroutine function'),
+            (inspect.isasyncgenfunction, 'an async generator function'),
+        ):
+            if test(run) or test(type(run).__call__):
+                raise TypeError(f'step {name!r}: run is {kind}, not a plain function that returns the result')
+        reads, writes = list(reads), list(writes)
+        _check_strings(name, 'reads', reads)
+        _check_strings(name, 'writes', writes)
+        if side_effects is not None:
+            _check_strings(name, 'side_effects', [side_effects], empty_ok=True)
+        log = CODE_LOG.format(step=name)
+        if log in writes:
+            raise ValueError(f"step {name!r}: writes {log}, the name of the call's own log")
+        _check_reply_names(name, reply, RESERVED)
+        step = CodeStep(name=name, run=run, reply=reply or {}, reads=reads, writes=writes, side_effects=side_effects)
+        _check_reply_declaration(step)
+        self.steps[name] = step
+        return step
+
     def flow(self, function: FlowFunction) -> FlowFunction:
         """Marks the generator function main(ctx) that runs the flow; it returns end(...)."""
         if self.flow_fn is not None:
@@ -1594,8 +1808,12 @@ class Runbook:
         if self.flow_fn is None:
             problems.append('no flow: decorate the generator function of the flow with @rb.flow')
         for step in self.steps.values():
-            problems += self._check_human(step) if isinstance(step, HumanStep) else self._check_step(step)
-        if not os.path.exists(os.path.join(self.here, 'prompts', 'common.md')):
+            if isinstance(step, HumanStep):
+                problems += self._check_human(step)
+            elif isinstance(step, Step):
+                problems += self._check_step(step)
+        agents = any(isinstance(step, Step) for step in self.steps.values())
+        if agents and not os.path.exists(os.path.join(self.here, 'prompts', 'common.md')):
             problems.append('prompts/common.md does not exist')
         return problems
 
@@ -1630,6 +1848,10 @@ class Runbook:
             raise CommandError('start: inputs must be one JSON object')
         inputs = _resolve_inputs(self.input_spec, given)
         os.makedirs(run_dir, exist_ok=True)
+        assert self._lock is not None
+        self._lock.acquire()
+        if os.path.exists(RunState.path(run_dir)):
+            raise CommandError(f'{run_dir} holds a run, started by another command meanwhile.')
         state = RunState(runbook=os.path.basename(self.here), status='running', inputs=inputs, calls=[])
         ProgressLog(run_dir).create(state.runbook, inputs)
         return state
@@ -1638,6 +1860,7 @@ class Runbook:
         label, raw = args
         state = RunState.load(run_dir)
         record = state.find(label)
+        _refuse_code(record, 'reply')
         if record.kind != 'step' or record.status != 'running':
             raise CommandError(f'call {label} is {record.status}, not running')
         reply: dict[str, Any]
@@ -1653,18 +1876,22 @@ class Runbook:
                 log.append(f'{record.label}: its executor is asked to correct the reply')
                 return state
             reply = {'status': 'failed', 'reason': f'invalid reply: {problem}'}
+        log.append(self._record_reply(record, reply))
+        return state
+
+    def _record_reply(self, record: CallRecord, reply: dict[str, Any]) -> str:
+        """Closes a launch with its checked reply, status included; returns its line for progress.md."""
+        reply = dict(reply)
         status = reply.pop('status')
         record.reply = reply
         record.close(status)
-        self._closed = record
+        self._closed.add(record.label)
         missing: list[str] = []
         if status == 'done':
             # What the launch wrote: a declared file it did not write is not passed on as if it had.
             record.files = {name: path for name, path in record.writes.items() if os.path.isfile(path)}
             missing = [name for name in record.writes if name not in record.files]
-        line = f'{record.label}: {json.dumps({"status": status, **reply}, ensure_ascii=False)}'
-        log.append(line + (f' (did not write {", ".join(missing)})' if missing else ''))
-        return state
+        return _reply_line(record) + (f' (did not write {", ".join(missing)})' if missing else '')
 
     def _answer(self, run_dir: str, args: list[str]) -> RunState:
         label, answer = args[0], args[1]
@@ -1704,10 +1931,11 @@ class Runbook:
         label = args[0]
         state = RunState.load(run_dir)
         record = state.find(label)
+        _refuse_code(record, 'interrupted')
         if record.kind != 'step' or record.status != 'running':
             raise CommandError(f'interrupted: call {label} is {record.status}; accepts only a running step')
         record.close('interrupted')
-        self._closed = record
+        self._closed.add(record.label)
         ProgressLog(run_dir).append(f'{record.label}: interrupted')
         return state
 
@@ -1716,7 +1944,8 @@ class Runbook:
         state = RunState.load(run_dir)
         record = state.find(label)
         asked = Replay(self, state, run_dir).run().asks
-        if not any(r is record for r in asked):
+        # A running code call whose process is gone is asked about too, but it is closed by the advance that follows.
+        if record.status in OPEN or not any(r is record for r in asked):
             raise CommandError(
                 f'relaunch: call {label} is {record.status}; accepts only a step with side_effects that ended failed, '
                 'blocked or interrupted and that the run asks the human about'
@@ -1741,7 +1970,9 @@ class Runbook:
 
         A replay drives the groups and items it opens in the same pass, and a group that fails there has already
         dropped the launches and questions inside it. So a command is one replay that opens and closes everything
-        the command leads to, plus at most one more that finds nothing to do.
+        the command leads to, plus at most one more that finds nothing to do. A replay that proposes a code call
+        commits the group and item records it opened, its updates and the first code call only, and runs that call
+        before the next replay: each code call the command runs costs one more replay and one more save.
         """
         files = RunFiles(run_dir)
         opened: list[Proposal] = []
@@ -1752,16 +1983,28 @@ class Runbook:
         while True:
             replay = Replay(self, state, run_dir)
             plan = replay.run()
+            code = next((p for p in plan.proposals if p.record.kind == 'code'), None)
             if not plan.proposals and not plan.updates:
                 break
-            for proposal in plan.proposals:
+            # Launches and questions wait for a replay without code: if this process dies while the code runs, no
+            # record says that a launch nobody made is running.
+            proposals = plan.proposals
+            if code is not None:
+                proposals = [p for p in proposals if p.record.kind not in LAUNCH_KINDS] + [code]
+            started: list[str] = []
+            for proposal in proposals:
                 record = proposal.record
                 record.started_at = utc_now()
-                assert record.kind in ('step', 'human') or record.position == len(state.calls)
+                assert record.kind in LAUNCH_KINDS or record.position == len(state.calls)
                 state.append(record)
                 step = self.steps.get(record.step)
-                if step is not None and record.kind in ('step', 'human'):
+                if step is not None and record.kind in LAUNCH_KINDS:
                     record.writes = {name: files.path(record, name) for name in _writes(step)}
+                if record.kind == 'code':
+                    record.pid = os.getpid()
+                    record.log = files.path(record, CODE_LOG.format(step=record.step))
+                    started.append(f'{record.label}: started (pid {record.pid})')
+                elif step is not None and record.kind in LAUNCH_KINDS:
                     opened.append(proposal)
                 if record.kind == 'step' and record.schema is not None:
                     schemas[files.schema_path(record)] = record.schema
@@ -1780,9 +2023,26 @@ class Runbook:
                     withdrawn.append(record)
                     log.append(f'{record.label}: cancelled')
                 elif update.changes.get('note') == NOTE_CANCELLED:
-                    if record is not self._closed:
+                    if record.label not in self._closed:
                         withdrawn.append(record)
                     log.append(f'{record.label}: {NOTE_CANCELLED}')
+                elif update.changes.get('note') == NOTE_OWNER_LOST:
+                    self._closed.add(record.label)
+                    log.append(f'{record.label}: interrupted ({NOTE_OWNER_LOST})')
+                elif record.kind == 'code':
+                    self._closed.add(record.label)
+                    log.append(_reply_line(record))
+            log += started
+            if code is not None:
+                self._write(run_dir, state, schemas, indexes, log)
+                state = self._run_code(run_dir, state, code)
+                # Nothing from before the reload is applied or printed: the records are found again by label.
+                fresh = {record.label: record for record in state.calls}
+                for proposal in opened:
+                    proposal.record = fresh[proposal.record.label]
+                withdrawn = [fresh[record.label] for record in withdrawn]
+                if self._correcting:
+                    self._correcting = (fresh[self._correcting[0].label], self._correcting[1])
         renderer = Renderer(self, run_dir, state)
         lines = [*renderer.correction(*self._correcting), ''] if self._correcting else []
         if withdrawn:
@@ -1801,6 +2061,18 @@ class Runbook:
         else:
             lines += renderer.pending(plan, opened)
             state.status = 'waiting_for_human' if plan.humans else 'running'
+        self._write(run_dir, state, schemas, indexes, log)
+        return lines
+
+    @staticmethod
+    def _write(
+        run_dir: str,
+        state: RunState,
+        schemas: dict[str, dict[str, Any]],
+        indexes: dict[str, list[dict[str, Any]]],
+        log: list[str],
+    ) -> None:
+        """Writes the reply schemas, the indexes, the log lines and the state, and empties what it wrote."""
         text = state.serialize()
         for path, schema in schemas.items():
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1815,7 +2087,42 @@ class Runbook:
         for line in log:
             progress.append(line)
         state.save(run_dir, text)
-        return lines
+        schemas.clear()
+        indexes.clear()
+        log.clear()
+
+    def _run_code(self, run_dir: str, state: RunState, proposal: Proposal) -> RunState:
+        """Runs a code call that is committed as running, with the lock released, then records its result in the
+        state as it is now, and returns that state."""
+        record, call, step = proposal.record, proposal.call, self.steps[proposal.record.step]
+        assert isinstance(step, CodeStep) and call is not None and record.log is not None and self._lock is not None
+        ctx = CodeContext(
+            inputs=state.inputs,
+            run=run_dir,
+            reads={name: record.files_in.get(name) for name in step.reads if name != WORKING_TREE},
+            writes=record.writes,
+            item=proposal.item,
+            log=record.log,
+            attempt=record.attempt,
+            address=record.id,
+        )
+        self._lock.release()
+        try:
+            reply = _run_function(step.run, ctx, call.inputs, record.schema)
+        except Exception as e:
+            # Raised around the function, such as by opening its log: recorded, not left running as if the process died.
+            reply = {'status': 'failed', 'reason': _exception_reason(e)}
+        self._lock.acquire()
+        state = RunState.load(run_dir)
+        current = next((r for r in state.calls if (r.id, r.attempt) == (record.id, record.attempt)), None)
+        progress = ProgressLog(run_dir)
+        if current is not None and current.status == 'running' and current.pid == os.getpid():
+            progress.append(self._record_reply(current, reply))
+        else:
+            found = current.status if current is not None else 'missing'
+            progress.append(f'{record.label}: result not recorded, the call is {found} in state.json')
+        state.save(run_dir)
+        return state
 
     # ---------- entry point ----------
 
@@ -1834,7 +2141,7 @@ class Runbook:
         try:
             if self.flow_fn is None:
                 raise CommandError('no flow: decorate the generator function of the flow with @rb.flow')
-            self._correcting = self._closed = None
+            self._correcting, self._closed = None, set()
             name = argv[2] if len(argv) > 2 else 'status'
             command = COMMANDS.get(name)
             if command is None:
@@ -1847,11 +2154,21 @@ class Runbook:
             too_many = command.max_args is not None and len(args) > command.max_args
             if len(args) < command.min_args or too_many:
                 raise CommandError(f'usage: flow.py <run> {name} {command.usage}'.rstrip())
-            state = command.handler(self, run_dir, args)
-            # What the command recorded is saved before the flow runs: if flow.py raises, the reply or the answer
-            # is not lost, and running flow.py on the run again takes it from there.
-            state.save(run_dir)
-            lines = self._advance(run_dir, state)
+            self._lock = RunLock(run_dir)
+            try:
+                # start takes the lock once the directory exists; any other command needs a run, and does not leave
+                # a state.lock in a directory that holds none.
+                if name != 'start':
+                    if not os.path.exists(RunState.path(run_dir)):
+                        raise CommandError(f'{RunState.path(run_dir)}: not found')
+                    self._lock.acquire()
+                state = command.handler(self, run_dir, args)
+                # What the command recorded is saved before the flow runs: if flow.py raises, the reply or the answer
+                # is not lost, and running flow.py on the run again takes it from there.
+                state.save(run_dir)
+                lines = self._advance(run_dir, state)
+            finally:
+                self._lock.release()
             print('\n'.join(lines))
             return 0
         except CommandError as e:
@@ -1894,6 +2211,11 @@ def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
         return {}, 'not a JSON object'
     if not reply:
         return {}, 'the message has no JSON object'
+    return _reply_fields(reply)
+
+
+def _reply_fields(reply: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """A reply object with the schema's nulls dropped and a reason on a failure, or what keeps it from being a reply."""
     if 'status' not in reply:
         return {}, "no field 'status'"
     if reply['status'] not in REPLY_STATUSES:
@@ -1906,6 +2228,129 @@ def _parse_reply(raw: str) -> tuple[dict[str, Any], str | None]:
     if not done and not (isinstance(reason, str) and reason.strip()):
         reply['reason'] = NO_REASON
     return reply, None
+
+
+def _reply_line(record: CallRecord) -> str:
+    """The line progress.md gets for a closed launch: its label, then its status and reply as JSON."""
+    return f'{record.label}: {json.dumps({"status": record.status, **(record.reply or {})}, ensure_ascii=False)}'
+
+
+def _refuse_code(record: CallRecord, command: str) -> None:
+    if record.kind == 'code':
+        raise CommandError(
+            f'{command}: call {record.label} is a code step; flow.py runs it itself, and closes it if its process is gone'
+        )
+
+
+def _is_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def _flush(streams: Iterable[Any]) -> None:
+    """Flushes each stream once; None and closed ones are passed over."""
+    seen: set[int] = set()
+    for stream in streams:
+        if stream is None or stream.closed or id(stream) in seen:
+            continue
+        seen.add(id(stream))
+        stream.flush()
+
+
+def _run_function(
+    run: Callable[..., Any], ctx: CodeContext, kwargs: dict[str, Any], schema: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Calls the function of a code step and returns the reply to record, status included.
+
+    Its stdin is at end of file, and its stdout and stderr go to the call's log, both the file descriptors its child
+    processes inherit and sys.stdout and sys.stderr, so nothing it prints reaches the orchestrator. The descriptors,
+    the streams and the working directory are restored after it, also when it raises KeyboardInterrupt, which is not
+    caught: the process ends with its call still running. A SystemExit it raises, as a CLI's main does, fails the
+    call like any other exception.
+    """
+    streams = sys.stdin, sys.stdout, sys.stderr
+    cwd = os.getcwd()
+    # A descriptor of 0-2 closed in this process gets /dev/null for the call, so the log and the saved copies do not
+    # land on it, and is closed again after.
+    closed = [fd for fd in (0, 1, 2) if not _is_open(fd)]
+    for fd in closed:
+        null = os.open(os.devnull, os.O_RDWR)
+        if null != fd:
+            os.dup2(null, fd)
+            os.close(null)
+    saved = [os.dup(fd) for fd in (0, 1, 2)]
+    try:
+        # A str that is not valid UTF-8, such as a file name read through surrogateescape, is escaped, not refused.
+        with open(ctx.log, 'a', encoding='utf-8', errors='backslashreplace', buffering=1) as log:
+            with open(os.devnull, encoding='utf-8') as devnull:
+                _flush(streams[1:])
+                os.dup2(devnull.fileno(), 0)
+                os.dup2(log.fileno(), 1)
+                os.dup2(log.fileno(), 2)
+                sys.stdin, sys.stdout, sys.stderr = devnull, log, log
+                try:
+                    result: Any = run(ctx, **kwargs)
+                except StepFailed as e:
+                    status = e.status if e.status in ('failed', 'blocked') else 'failed'
+                    result = {**e.reply, 'status': status, 'reason': _utf8(e.reason)}
+                except (Exception, SystemExit) as e:
+                    # The traceback from the function down, without the engine's own frame.
+                    tb = e.__traceback__ and e.__traceback__.tb_next
+                    log.write(''.join(traceback.format_exception(type(e), e, tb)))
+                    return {'status': 'failed', 'reason': _exception_reason(e)}
+                finally:
+                    # What the function wrote to a stream it held before the call goes to the log, not to the
+                    # orchestrator.
+                    _flush((log, *streams[1:], sys.__stdout__, sys.__stderr__))
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = streams
+        for fd, copy_of_fd in zip((0, 1, 2), saved):
+            os.dup2(copy_of_fd, fd)
+            os.close(copy_of_fd)
+        for fd in closed:
+            os.close(fd)
+        os.chdir(cwd)
+    problem = _result_problem(result)
+    if problem is None:
+        reply, problem = _reply_fields(json.loads(json.dumps(result)))
+        if problem is None and reply['status'] == 'done':
+            problem = _reply_problem(reply, _schema_fields(schema))
+        if problem is None:
+            return reply
+    return {'status': 'failed', 'reason': f'invalid result: {problem}'}
+
+
+def _exception_reason(e: BaseException) -> str:
+    """A failed call's reason for an exception: its type and its message on one line."""
+    message = _utf8(' '.join(str(e).split()))
+    return type(e).__name__ + (f': {message}' if message else '')
+
+
+def _utf8(text: str) -> str:
+    """The text with what UTF-8 cannot hold, such as a file name read through surrogateescape, as escapes."""
+    return text.encode('utf-8', 'backslashreplace').decode('utf-8')
+
+
+def _result_problem(result: Any) -> str | None:
+    """What keeps a code step's result from being recorded as JSON as it is, if anything."""
+    try:
+        json.dumps(result, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as e:
+        return str(e)
+    # json.dumps turns the keys 1 and '1' both into '1', and keeps one of them.
+    if not _is_json(result):
+        return 'a key of a dict is not a string'
+    if not isinstance(result, dict):
+        return f'{type(result).__name__}, not a dict'
+    # state.json and progress.md are UTF-8.
+    try:
+        json.dumps(result, ensure_ascii=False).encode('utf-8')
+    except UnicodeEncodeError as e:
+        return f'a string is not valid UTF-8: {e}'
+    return None
 
 
 def _reply_problem(reply: dict[str, Any], fields: dict[str, Any]) -> str | None:

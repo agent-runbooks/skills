@@ -1,0 +1,336 @@
+{
+  "format": 2,
+  "runbook": "runbook-release-checks",
+  "status": "running",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo"
+  },
+  "calls": [
+    {
+      "id": "main/changes",
+      "attempt": 1,
+      "kind": "code",
+      "step": "changes",
+      "status": "done",
+      "reply": {
+        "commits": 3
+      },
+      "note": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {
+        "changes.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/00-changes.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "commits"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "changes.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/00-changes.md"
+      },
+      "pid": 4242,
+      "log": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/00-changes.code.log",
+      "started_at": "2026-10-12T11:00:00Z",
+      "ended_at": "2026-10-12T11:00:12Z"
+    },
+    {
+      "id": "main/lint",
+      "attempt": 1,
+      "kind": "code",
+      "step": "lint",
+      "status": "failed",
+      "reply": {
+        "reason": "KeyError: 'max-warnings'"
+      },
+      "note": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "pid": 4242,
+      "log": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/01-lint.code.log",
+      "started_at": "2026-10-12T11:00:12Z",
+      "ended_at": "2026-10-12T11:00:12Z"
+    },
+    {
+      "id": "main/build",
+      "attempt": 1,
+      "kind": "code",
+      "step": "build",
+      "status": "interrupted",
+      "reply": null,
+      "note": "owner process lost",
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wheel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "wheel"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "pid": 4242,
+      "log": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/02-build.code.log",
+      "started_at": "2026-10-12T11:00:12Z",
+      "ended_at": "2026-10-12T11:01:52Z"
+    },
+    {
+      "id": "main/build",
+      "attempt": 2,
+      "kind": "code",
+      "step": "build",
+      "status": "done",
+      "reply": {
+        "wheel": "dist/textkit-1.5.0-py3-none-any.whl"
+      },
+      "note": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wheel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "wheel"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "pid": 4242,
+      "log": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/03-build.code.log",
+      "started_at": "2026-10-12T11:01:52Z",
+      "ended_at": "2026-10-12T11:02:32Z"
+    },
+    {
+      "id": "main/notes",
+      "attempt": 1,
+      "kind": "step",
+      "step": "notes",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/brief.md",
+        "changes.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/00-changes.md"
+      },
+      "files": {
+        "notes.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/04-notes.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "notes.md": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/04-notes.md"
+      },
+      "started_at": "2026-10-12T11:02:32Z",
+      "ended_at": "2026-10-12T11:07:02Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/tests",
+      "attempt": 1,
+      "kind": "code",
+      "step": "tests",
+      "status": "running",
+      "reply": null,
+      "note": null,
+      "inputs": {},
+      "files_in": {},
+      "files": {},
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {},
+      "pid": 4242,
+      "log": "/tmp/rb-demo/.agent-runbooks/runs/20261012-release-checks-running/05-tests.code.log",
+      "started_at": "2026-10-12T11:07:02Z",
+      "ended_at": null
+    }
+  ]
+}

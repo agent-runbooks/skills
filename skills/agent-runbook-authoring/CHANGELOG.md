@@ -2,6 +2,17 @@
 
 Versions of the engine, `references/agent_runbooks.py`, named `runbook.py` before 2.0.0. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 2.1.0
+
+Code steps. A code step is a function in `flow.py` that `flow.py` runs itself, and its return value is recorded as the call's reply. The tests, a lint or a build become a recorded fact, with no model, no launch and no agent's word to take. No change is required in an existing `flow.py`. A runbook that uses code steps takes the new Execution rules from `references/template.md`, and one that declares the engine from PyPI raises its pin to `agent-runbooks>=2.1.0,<3`.
+
+- `rb.code(name, run=, reply=, reads=, writes=, side_effects=)` declares a code step, and the flow calls it like any step: `r = yield tests(target='auth')`. `run(ctx, **kwargs)` gets a `CodeContext` and the call's keyword arguments as the flow passed them. See `rb.code` in `references/flow-language.md`.
+- The function returns a dict with `status` and the reply's fields, checked as an agent's reply is. `StepFailed` or any other exception fails the call. What the function prints goes to `<run>/<NN>-<name>.code.log`, never to the orchestrator.
+- A code call runs inside the command that reaches it, at most once per attempt. Every command holds `<run>/state.lock` while it reads and writes the state. A code call whose process died runs again once, or with `side_effects` asks the human first. `reply` and `interrupted` refuse a code call.
+- `state.json` stays format 2, with a new record kind, `code`.
+- `--check` requires `prompts/common.md` only when the flow declares an agent step.
+- A code call costs one replay and two saves of `state.json`, as an agent reply does. 200 code calls on top of 2,000 recorded calls took about 27 ms per call on Python 3.14 and 70 ms on Python 3.9, on an Apple M3 Max.
+
 ## 2.0.0
 
 The flow of a runbook is one Python generator, and the engine replays it against the recorded replies on every command. Steps stay declarative. An existing `flow.py` is rewritten, and a run started by 1.x does not load. The design is in [`docs/engine-2.0-design.md`](https://github.com/agent-runbooks/skills/blob/main/docs/engine-2.0-design.md) of the repository.
