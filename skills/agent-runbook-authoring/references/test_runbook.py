@@ -2725,6 +2725,18 @@ def dead_pid() -> int:
     return child.pid
 
 
+def linear_code(rb: Runbook, step: agent_runbooks.CodeStep) -> None:
+    """A flow of one code call that ends failed with its reason when the call fails."""
+
+    @rb.flow
+    def main(ctx):
+        try:
+            yield step()
+        except StepFailed as e:
+            return end('failed', e.reason)
+        return end('ready')
+
+
 class CodeStepTest(RunbookTestCase):
     """Code steps run in-process: a function counts its runs in <root>/runs-<name>."""
 
@@ -2839,6 +2851,10 @@ class CodeStepTest(RunbookTestCase):
             (None, 'NoneType, not a dict'),
             ({'passed': True}, "no field 'status'"),
             ({'status': 'ok'}, 'field \'status\' must be one of done, failed, blocked, got "ok"'),
+            (
+                {'status': 'done', 'passed': True, 'file': b'caf\xff'.decode('utf-8', 'surrogateescape')},
+                "a string is not valid UTF-8: 'utf-8' codec can't encode character '\\udcff'",
+            ),
         ]
         for result, problem in cases:
             with self.subTest(problem=problem):
@@ -2877,11 +2893,15 @@ class CodeStepTest(RunbookTestCase):
             def nothing(ctx):
                 return {'status': 'failed', 'reason': None}
 
+            def exits(ctx):
+                sys.exit(3)
+
             steps = [
                 rb.code('step-failed', run=raises_step_failed),
                 rb.code('blocked', run=blocks),
                 rb.code('crash', run=crashes),
                 rb.code('nothing', run=nothing),
+                rb.code('exits', run=exits),
             ]
 
             @rb.flow
@@ -2896,9 +2916,11 @@ class CodeStepTest(RunbookTestCase):
 
         out = self.start(self.runbook(declare))
         self.assertIn(
-            'failed 3 tests fail; blocked no network; failed ZeroDivisionError: division by zero; failed no reason given',
+            'failed 3 tests fail; blocked no network; failed ZeroDivisionError: division by zero; failed no reason given; '
+            'failed SystemExit: 3',
             out,
         )
+        self.assertIn('sys.exit(3)', self.log_of('main/exits'))
         self.assertEqual(self.record('main/blocked')['reply'], {'reason': 'no network', 'tried': 2})
         log = self.log_of('main/crash')
         self.assertTrue(log.startswith('before the crash\nTraceback (most recent call last):\n'), log)
@@ -2940,6 +2962,46 @@ class CodeStepTest(RunbookTestCase):
         self.assertEqual((sys.stdin, sys.stdout, sys.stderr), streams)
         after = [os.fstat(fd) for fd in (0, 1, 2)]
         self.assertEqual([(s.st_dev, s.st_ino) for s in after], [(s.st_dev, s.st_ino) for s in before])
+
+    def test_text_that_is_not_utf8_is_escaped_in_the_log(self) -> None:
+        name = b'caf\xff'.decode('utf-8', 'surrogateescape')
+
+        def declare(rb: Runbook) -> None:
+            def lists(ctx):
+                print(name)
+                return {'status': 'done'}
+
+            def fails(ctx):
+                raise FileNotFoundError(name)
+
+            def step_failed(ctx):
+                raise StepFailed(name)
+
+            steps = [rb.code('lists', run=lists), rb.code('fails', run=fails), rb.code('step-failed', run=step_failed)]
+
+            @rb.flow
+            def main(ctx):
+                reasons = []
+                for step in steps:
+                    try:
+                        yield step()
+                    except StepFailed as e:
+                        reasons.append(e.reason)
+                return end('ready', '; '.join(reasons))
+
+        out = self.start(self.runbook(declare))
+        self.assertTrue(out.startswith('end: ready'), out)
+        self.assertIn('FileNotFoundError: caf\\udcff; caf\\udcff', out)
+        self.assertEqual(self.log_of('main/lists'), 'caf\\udcff\n')
+        self.assertIn('main/fails: {"status": "failed", "reason": "FileNotFoundError: caf\\\\udcff"}', self.progress())
+
+    def test_a_failure_around_the_function_fails_the_call(self) -> None:
+        os.makedirs(os.path.join(self.run_dir, '00-tests.code.log'))
+        out = self.start(self.runbook(lambda rb: linear_code(rb, self.code(rb, 'tests'))))
+        self.assertEqual(self.record('main/tests')['status'], 'failed')
+        self.assertTrue(self.record('main/tests')['reply']['reason'].startswith('IsADirectoryError: '), out)
+        self.assertEqual(self.runs('tests'), 0)
+        self.assertTrue(out.startswith('end: failed'), out)
 
     def test_keyword_arguments_are_the_flows_objects(self) -> None:
         seen: dict[str, Any] = {}
@@ -3186,6 +3248,10 @@ class CodeStepTest(RunbookTestCase):
         rb = self.runbook(declare)
         self.start(rb)
         self.lose('main/merge')
+        # Not until a command has closed it: the advance after the relaunch would close it and ask again.
+        before = self.state(), self.progress()
+        self.assertIn('relaunch: call main/merge is running', self.fails(rb, 'relaunch', 'main/merge'))
+        self.assertEqual((self.state(), self.progress()), before)
         out = self.call(rb)
         self.assertEqual(
             self.first_line(out),

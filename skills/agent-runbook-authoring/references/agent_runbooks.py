@@ -634,10 +634,11 @@ def _alive(pid: int) -> bool:
     if sys.platform == 'win32':
         import ctypes
 
-        kernel32 = ctypes.windll.kernel32
+        # use_last_error keeps the error of OpenProcess from being overwritten by ctypes' own calls.
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
         handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return kernel32.GetLastError() == 5  # ERROR_ACCESS_DENIED: it exists
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists
         try:
             code = ctypes.c_ulong()
             return not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
@@ -1890,8 +1891,7 @@ class Runbook:
             # What the launch wrote: a declared file it did not write is not passed on as if it had.
             record.files = {name: path for name, path in record.writes.items() if os.path.isfile(path)}
             missing = [name for name in record.writes if name not in record.files]
-        line = f'{record.label}: {json.dumps({"status": status, **reply}, ensure_ascii=False)}'
-        return line + (f' (did not write {", ".join(missing)})' if missing else '')
+        return _reply_line(record) + (f' (did not write {", ".join(missing)})' if missing else '')
 
     def _answer(self, run_dir: str, args: list[str]) -> RunState:
         label, answer = args[0], args[1]
@@ -1944,7 +1944,8 @@ class Runbook:
         state = RunState.load(run_dir)
         record = state.find(label)
         asked = Replay(self, state, run_dir).run().asks
-        if not any(r is record for r in asked):
+        # A running code call whose process is gone is asked about too, but it is closed by the advance that follows.
+        if record.status in OPEN or not any(r is record for r in asked):
             raise CommandError(
                 f'relaunch: call {label} is {record.status}; accepts only a step with side_effects that ended failed, '
                 'blocked or interrupted and that the run asks the human about'
@@ -1983,7 +1984,7 @@ class Runbook:
             replay = Replay(self, state, run_dir)
             plan = replay.run()
             code = next((p for p in plan.proposals if p.record.kind == 'code'), None)
-            if code is None and not plan.proposals and not plan.updates:
+            if not plan.proposals and not plan.updates:
                 break
             # Launches and questions wait for a replay without code: if this process dies while the code runs, no
             # record says that a launch nobody made is running.
@@ -2030,7 +2031,7 @@ class Runbook:
                     log.append(f'{record.label}: interrupted ({NOTE_OWNER_LOST})')
                 elif record.kind == 'code':
                     self._closed.add(record.label)
-                    log.append(f'{record.label}: {json.dumps({"status": record.status, **(record.reply or {})})}')
+                    log.append(_reply_line(record))
             log += started
             if code is not None:
                 self._write(run_dir, state, schemas, indexes, log)
@@ -2106,7 +2107,11 @@ class Runbook:
             address=record.id,
         )
         self._lock.release()
-        reply = _run_function(step.run, ctx, call.inputs, record.schema)
+        try:
+            reply = _run_function(step.run, ctx, call.inputs, record.schema)
+        except Exception as e:
+            # Raised around the function, such as by opening its log: recorded, not left running as if the process died.
+            reply = {'status': 'failed', 'reason': _exception_reason(e)}
         self._lock.acquire()
         state = RunState.load(run_dir)
         current = next((r for r in state.calls if (r.id, r.attempt) == (record.id, record.attempt)), None)
@@ -2225,6 +2230,11 @@ def _reply_fields(reply: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     return reply, None
 
 
+def _reply_line(record: CallRecord) -> str:
+    """The line progress.md gets for a closed launch: its label, then its status and reply as JSON."""
+    return f'{record.label}: {json.dumps({"status": record.status, **(record.reply or {})}, ensure_ascii=False)}'
+
+
 def _refuse_code(record: CallRecord, command: str) -> None:
     if record.kind == 'code':
         raise CommandError(
@@ -2257,8 +2267,9 @@ def _run_function(
 
     Its stdin is at end of file, and its stdout and stderr go to the call's log, both the file descriptors its child
     processes inherit and sys.stdout and sys.stderr, so nothing it prints reaches the orchestrator. The descriptors,
-    the streams and the working directory are restored after it, also when it raises KeyboardInterrupt or
-    SystemExit, which are not caught: the process ends with its call still running.
+    the streams and the working directory are restored after it, also when it raises KeyboardInterrupt, which is not
+    caught: the process ends with its call still running. A SystemExit it raises, as a CLI's main does, fails the
+    call like any other exception.
     """
     streams = sys.stdin, sys.stdout, sys.stderr
     cwd = os.getcwd()
@@ -2272,25 +2283,28 @@ def _run_function(
             os.close(null)
     saved = [os.dup(fd) for fd in (0, 1, 2)]
     try:
-        with open(ctx.log, 'a', encoding='utf-8', buffering=1) as log, open(os.devnull, encoding='utf-8') as devnull:
-            _flush(streams[1:])
-            os.dup2(devnull.fileno(), 0)
-            os.dup2(log.fileno(), 1)
-            os.dup2(log.fileno(), 2)
-            sys.stdin, sys.stdout, sys.stderr = devnull, log, log
-            try:
-                result: Any = run(ctx, **kwargs)
-            except StepFailed as e:
-                status = e.status if e.status in ('failed', 'blocked') else 'failed'
-                result = {**e.reply, 'status': status, 'reason': e.reason}
-            except Exception as e:
-                # The traceback from the function down, without the engine's own frame.
-                log.write(''.join(traceback.format_exception(type(e), e, e.__traceback__ and e.__traceback__.tb_next)))
-                message = ' '.join(str(e).split())
-                return {'status': 'failed', 'reason': type(e).__name__ + (f': {message}' if message else '')}
-            finally:
-                # What the function wrote to a stream it held before the call goes to the log, not to the orchestrator.
-                _flush((log, *streams[1:], sys.__stdout__, sys.__stderr__))
+        # A str that is not valid UTF-8, such as a file name read through surrogateescape, is escaped, not refused.
+        with open(ctx.log, 'a', encoding='utf-8', errors='backslashreplace', buffering=1) as log:
+            with open(os.devnull, encoding='utf-8') as devnull:
+                _flush(streams[1:])
+                os.dup2(devnull.fileno(), 0)
+                os.dup2(log.fileno(), 1)
+                os.dup2(log.fileno(), 2)
+                sys.stdin, sys.stdout, sys.stderr = devnull, log, log
+                try:
+                    result: Any = run(ctx, **kwargs)
+                except StepFailed as e:
+                    status = e.status if e.status in ('failed', 'blocked') else 'failed'
+                    result = {**e.reply, 'status': status, 'reason': _utf8(e.reason)}
+                except (Exception, SystemExit) as e:
+                    # The traceback from the function down, without the engine's own frame.
+                    tb = e.__traceback__ and e.__traceback__.tb_next
+                    log.write(''.join(traceback.format_exception(type(e), e, tb)))
+                    return {'status': 'failed', 'reason': _exception_reason(e)}
+                finally:
+                    # What the function wrote to a stream it held before the call goes to the log, not to the
+                    # orchestrator.
+                    _flush((log, *streams[1:], sys.__stdout__, sys.__stderr__))
     finally:
         sys.stdin, sys.stdout, sys.stderr = streams
         for fd, copy_of_fd in zip((0, 1, 2), saved):
@@ -2309,6 +2323,17 @@ def _run_function(
     return {'status': 'failed', 'reason': f'invalid result: {problem}'}
 
 
+def _exception_reason(e: BaseException) -> str:
+    """A failed call's reason for an exception: its type and its message on one line."""
+    message = _utf8(' '.join(str(e).split()))
+    return type(e).__name__ + (f': {message}' if message else '')
+
+
+def _utf8(text: str) -> str:
+    """The text with what UTF-8 cannot hold, such as a file name read through surrogateescape, as escapes."""
+    return text.encode('utf-8', 'backslashreplace').decode('utf-8')
+
+
 def _result_problem(result: Any) -> str | None:
     """What keeps a code step's result from being recorded as JSON as it is, if anything."""
     try:
@@ -2320,6 +2345,11 @@ def _result_problem(result: Any) -> str | None:
         return 'a key of a dict is not a string'
     if not isinstance(result, dict):
         return f'{type(result).__name__}, not a dict'
+    # state.json and progress.md are UTF-8.
+    try:
+        json.dumps(result, ensure_ascii=False).encode('utf-8')
+    except UnicodeEncodeError as e:
+        return f'a string is not valid UTF-8: {e}'
     return None
 
 
