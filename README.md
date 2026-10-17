@@ -130,9 +130,9 @@ Copy `skills/<name>` into your harness's skills directory: `~/.claude/skills`, `
 
 A runbook pays off for a procedure that repeats: three or more steps, several executors, run again and again. A task that happens once is a prompt or a workflow script, not a runbook.
 
-Ask the session for a runbook, and [agent-runbook-authoring](skills/agent-runbook-authoring) writes it with you: the prompts, `flow.py`, the execution rules, and a cold read by a fresh subagent that has not seen the skill. A complete sample to read first is [runbook-review-loop](skills/agent-runbook-authoring/references/runbook-review-loop): a coder and a reviewer in a loop with a human step, on the harness's own subagents, so a copy of it in a skills directory runs as it is.
+Ask the session for a runbook, and [agent-runbook-authoring](skills/agent-runbook-authoring) writes it with you: the prompts, `flow.py`, the execution rules, and a cold read by a fresh subagent that has not seen the skill. A complete sample to read first is [runbook-review-loop](skills/agent-runbook-authoring/references/runbook-review-loop): a coder and a reviewer in a loop with a human step, on the harness's own subagents. The [gallery](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop) carries it as a runbook to install and run.
 
-To change the checks, the models or the project rules of a gallery runbook, you usually do not need a new one: runbook-task-cycle takes a [profile file](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-task-cycle#the-profile) per project.
+To change the checks, the models or the project rules of a gallery runbook, you usually do not need a new one: runbook-implement-task takes a [profile file](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-implement-task#the-profile) per project.
 
 ## Compatibility and limits
 
