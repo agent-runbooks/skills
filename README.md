@@ -75,7 +75,7 @@ The reasoning behind each row, and where a script fits better, is in [`docs/comp
 |---|---|---|
 | write a runbook for your own procedure | [agent-runbook-authoring](skills/agent-runbook-authoring) | a self-contained runbook that runs where this skill is not installed |
 | watch a run | [runbook-viewer](skills/runbook-viewer) | the status above in the chat after every step, and a read-only page on localhost with each step's log and output files |
-| run a ready-made runbook | [agent-runbooks/gallery](https://github.com/agent-runbooks/gallery) | runbooks to install and adapt; start with runbook-review-loop, on your session's own subagents |
+| run a ready-made runbook | [agent-runbooks/gallery](https://github.com/agent-runbooks/gallery) | runbooks to install and adapt; start with [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop), whose steps run on the harness's own subagents |
 
 The two skills here stand apart: a runbook needs neither to run, and prints the status by itself when the viewer is installed.
 
