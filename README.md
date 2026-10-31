@@ -53,6 +53,10 @@ For example, here is a run halfway through, as runbook-viewer prints it into the
   ● b  review#2  coder      5:00
 ```
 
+The viewer's page shows the same run with each step's log and output files. Here it is during a run of [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop): two reviews with a finding each, a question to the human, who opens the second review's findings before answering, and a third review with none. The waits between steps are cut.
+
+![A run of runbook-review-loop: the runbook-viewer page opens beside the agent session, the human clicks the second review to read its finding, answers the question, and after the run clicks through the fix and the last review](docs/review-loop-run.gif)
+
 Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):
 
 | | Runbook | Claude Code workflow | Copilot dynamic workflow | Code orchestrator |
@@ -138,6 +142,10 @@ To change the checks, the models or the project rules of runbook-implement-task,
 
 - The skills load in any harness that reads Agent Skills. Running a runbook takes more: the orchestrating session must launch subagents and learn when they finish.
 - The engine computes the transitions. Whether the orchestrator follows the execution rules is still up to the model; `progress.md` and the review checklist make a deviation visible, not impossible.
+
+## Who uses it
+
+No one has said so yet. Running a runbook, or wrote one for your team? Say so in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each reply becomes a line here.
 
 ## License
 
