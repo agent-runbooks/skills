@@ -37,6 +37,7 @@ if sys.version_info < (3, 9):
 
 import copy
 import inspect
+import io
 import json
 import os
 import re
@@ -1581,7 +1582,7 @@ COUNTS = (
     ('waiting', ('waiting',)),
     ('not started', ('not_started',)),
 )
-# A foreach of more items than this shows in the final table only the items that did not end done.
+# A foreach of more items than this shows in the final table only the items that started and did not end done.
 TABLE_ITEMS = 20
 TABLE_INDENT = '&nbsp;' * 3
 TABLE_HEAD = ['| | step | executor | time | result | files |', '|---|---|---|---|---|---|']
@@ -1632,14 +1633,15 @@ def _now() -> datetime:
 def final_table(run_dir: str, state: RunState, now: datetime) -> list[str]:
     """The run's state as a markdown table: a row per line of _layout(), nesting as `&nbsp;` in the step cell, and
     links to the files of each row that are in the run directory. A foreach of more than TABLE_ITEMS items keeps only
-    the items that did not end done, with what is nested in them."""
+    the items that started and did not end done, with what is nested in them: its header counts the rest."""
     names = set(os.listdir(run_dir))
     entries = _layout([record.to_json() for record in state.calls])
     items: dict[str, list[dict[str, Any]]] = {}
     for e in entries:
         if e['type'] == 'item':
             items.setdefault(e['group'], []).append(e)
-    hidden = {i['id'] for group in items.values() if len(group) > TABLE_ITEMS for i in group if i['status'] == 'done'}
+    quiet = ('done', 'not_started')
+    hidden = {i['id'] for group in items.values() if len(group) > TABLE_ITEMS for i in group if i['status'] in quiet}
     lines = list(TABLE_HEAD)
     for e in entries:
         address = e['id']
@@ -2378,8 +2380,6 @@ class Runbook:
             if len(args) != 2 or args[0] != '--tail' or not re.fullmatch(r'[0-9]+', args[1]) or int(args[1]) < 1:
                 raise CommandError(f'usage: flow.py <run> status {STATUS_USAGE}')
             tail = int(args[1])
-        if not os.path.exists(RunState.path(run_dir)):
-            raise CommandError(f'{RunState.path(run_dir)}: not found')
         return status_text(run_dir, RunState.load(run_dir), _now(), tail)
 
     # ---------- advancing ----------
@@ -2554,6 +2554,9 @@ class Runbook:
     def main(self, argv: list[str] | None = None) -> int:
         """Run the command in argv (sys.argv by default); returns the exit code."""
         argv = sys.argv if argv is None else argv
+        # Before Python 3.15 a pipe on Windows takes the ANSI code page, which has no marks of the status, such as ✓.
+        if isinstance(sys.stdout, io.TextIOWrapper):
+            sys.stdout.reconfigure(encoding='utf-8')
         if len(argv) < 2 or argv[1] in ('-h', '--help'):
             assert __doc__ is not None
             print(__doc__.strip())

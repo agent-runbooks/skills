@@ -1211,7 +1211,7 @@ class StartTest(RunbookTestCase):
         self.assertEqual(self.call(self.rb).strip(), out.strip())
         self.assertEqual(self.progress().count('- end: ready'), 1)
 
-    def test_log_and_status(self) -> None:
+    def test_log_and_resume(self) -> None:
         self.start(self.rb)
         before = self.state()
         self.assertEqual(self.call(self.rb).strip(), 'still running: `main/first`')
@@ -2017,6 +2017,34 @@ run · runbook-test · running
                 self.assertEqual(self.call(self.rb, 'status', '--tail', tail), full)
             self.assertIn('\n… 1 row above\n', self.call(self.rb, 'status', '--tail', '6'))
 
+    def test_a_question_and_a_tail_at_the_top_level(self) -> None:
+        self.run_dir = os.path.join(self.root, 'loop')
+        rb = self.runbook(review_loop, brief=str, maxFixRounds=1)
+        self.start(rb, brief='brief.md')
+        self.reply(rb, 'main/implement')
+        self.reply(rb, 'main/review', findings=2)
+        self.reply(rb, 'main/fix')
+        self.reply(rb, 'main/review#2', findings=1)
+        self.assertEqual(
+            self.call(rb, 'status'),
+            """\
+loop · runbook-test · waiting_for_human
+✓ implement   strong   1:00
+✓ review      light    1:00  findings: 2
+✓ fix         strong   1:00
+✓ review#2    light    1:00  findings: 1
+? ask-rounds           1:00  waiting for the human
+""",
+        )
+        self.assertEqual(
+            self.call(rb, 'status', '--tail', '1'),
+            """\
+loop · runbook-test · waiting_for_human
+… 4 rows above
+? ask-rounds           2:00  waiting for the human
+""",
+        )
+
     def test_status_changes_nothing(self) -> None:
         def snapshot() -> dict[str, bytes]:
             paths = [pathlib.Path(self.run_dir, name) for name in sorted(os.listdir(self.run_dir))]
@@ -2108,6 +2136,28 @@ class FinalTableTest(RunbookTestCase):
                     f'| ✓ | **foreach items** | | | {count - 1} done, 1 failed (i3) | {self.link("00-items.index.json")} |',
                 )
                 self.assertEqual([row.split(' | ')[1].removeprefix('&nbsp;' * 3) for row in table[3:]], rows)
+
+    def test_a_foreach_of_more_than_20_items_leaves_out_those_not_started(self) -> None:
+        def declare(rb: Runbook) -> None:
+            def body(ctx, item):
+                if item.key == 'i1':
+                    raise StepFailed('broken')
+                return {'ok': True}
+                yield
+
+            @rb.flow
+            def main(ctx):
+                yield foreach('items', over='items.json', body=body, max_concurrent=1)
+                return end('ready')
+
+        os.makedirs(self.run_dir)
+        self.write_input('items.json', [{'key': f'i{i}'} for i in range(21)])
+        table = self.table(self.start(self.runbook(declare)))
+        self.assertEqual(
+            table[2],
+            f'| ✗ | **foreach items** | | | 1 done, 1 failed (i1), 19 not started | {self.link("00-items.index.json")} |',
+        )
+        self.assertEqual([row.split(' | ')[1].removeprefix('&nbsp;' * 3) for row in table[3:]], ['[i1]'])
 
     def test_links_are_absolute_and_go_in_angle_brackets_for_a_path_with_spaces(self) -> None:
         def declare(rb: Runbook) -> None:
