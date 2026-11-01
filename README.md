@@ -53,9 +53,12 @@ For example, here is a run halfway through, as runbook-viewer prints it into the
   ● b  review#2  coder      5:00
 ```
 
-The viewer's page shows the same run with each step's log and output files. Here it is during a run of [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop): two reviews with a finding each, a question to the human, who opens the second review's findings before answering, and a third review with none. The waits between steps are cut.
+The viewer's page shows the same status, plus each step's log and output files. Here it is during a run of [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop) with `maxFixRounds` at 1: two reviews with a finding each, a question to the human, who opens the second review's finding before answering, and a third review with none. The waits between steps are cut.
 
-![A run of runbook-review-loop: the runbook-viewer page opens beside the agent session, the human clicks the second review to read its finding, answers the question, and after the run clicks through the fix and the last review](docs/review-loop-run.gif)
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/agent-runbooks/.github/main/assets/review-loop-run.png">
+  <img src="https://raw.githubusercontent.com/agent-runbooks/.github/main/assets/review-loop-run.gif" alt="A run of runbook-review-loop: the runbook-viewer page opens beside the agent session, the human clicks the second review to read its finding, answers the question, and after the run clicks through the last fix and the first review">
+</picture>
 
 Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):
 
@@ -145,7 +148,7 @@ To change the checks, the models or the project rules of runbook-implement-task,
 
 ## Who uses it
 
-No one has said so yet. Running a runbook, or wrote one for your team? Say so in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each reply becomes a line here.
+No one has said so yet. If you run a runbook or wrote one for your team, start a discussion in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each discussion there becomes a line here.
 
 ## License
 
