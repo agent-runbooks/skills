@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Shows a runbook run: a text status, or a page on localhost. Reads the run directory and never writes to it.
+"""Shows a runbook run on a page on localhost. Reads the run directory and never writes to it.
 
-    view.py <run> --status [--tail N]
-                                 print the text status, or only its last N rows
     view.py <run> [--port N] [--idle-minutes N]
                                  serve the page on 127.0.0.1 until interrupted or idle
 
@@ -354,7 +352,7 @@ def owner(address: str, groups: dict[str, str]) -> tuple[str, str] | None:
 
 
 def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """The lines of the status and of the page's list, in the order things were opened.
+    """The lines of the page's list, in the order things were opened.
 
     Each is a dict with `type`, `id` (an address), `depth` and `within`, the groups around it, outermost first. A
     group's header, type 'parallel' or 'foreach', has `header` and `counts`, the header after the name; its branches
@@ -534,7 +532,7 @@ def _counts(members: list[tuple[str, str]]) -> str:
     return ', '.join(parts)
 
 
-# ---------- text status ----------
+# ---------- times and replies ----------
 
 
 def parse_time(value: Any) -> datetime | None:
@@ -547,20 +545,8 @@ def parse_time(value: Any) -> datetime | None:
         return None
 
 
-def duration(call: dict[str, Any], now: datetime) -> str:
-    """m:ss or h:mm:ss from started_at to ended_at, or to now for an open attempt; empty without timestamps."""
-    start = parse_time(call.get('started_at'))
-    stop = now if call.get('status') in OPEN else parse_time(call.get('ended_at'))
-    if start is None or stop is None:
-        return ''
-    seconds = max(0, int((stop - start).total_seconds()))
-    h, rest = divmod(seconds, 3600)
-    m, s = divmod(rest, 60)
-    return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
-
-
 def reply_text(reply: Any) -> str:
-    """A reply as the status shows it: an object's fields as k: v, ..., a string as it is, any other value as JSON."""
+    """A reply as the page shows it: an object's fields as k: v, ..., a string as it is, any other value as JSON."""
     if isinstance(reply, dict):
         return ', '.join(
             f'{k}: {reply_text(v) if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
@@ -585,64 +571,6 @@ def summary(call: dict[str, Any]) -> str:
         return ''
     choice = [str(reply.pop('choice'))] if call.get('kind') == 'human' and 'choice' in reply else []
     return ', '.join([*choice, reply_text(reply)] if reply else choice)
-
-
-def _aligned(rows: list[list[str]]) -> list[str]:
-    """Rows of [mark, *columns, duration, note] as lines, each column as wide as its widest cell; empty ones go."""
-    if not rows:
-        return []
-    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
-    last = len(widths) - 2
-    if widths[last]:
-        widths[last] = max(widths[last], 5)
-    lines = []
-    for row in rows:
-        cells = [
-            row[i].rjust(widths[i]) if i == last else row[i].ljust(widths[i]) for i in range(1, last + 1) if widths[i]
-        ]
-        lines.append(f'{row[0]} {"  ".join(cells)}  {row[-1]}'.rstrip())
-    return lines
-
-
-def status_text(run: str, now: datetime, tail: int = 0) -> str:
-    """The text status: a header line, then the lines of layout(), indented two spaces per depth.
-
-    The calls of main are aligned among themselves, and the rows of each group among themselves. With tail, only the
-    last tail rows show, after a line with the count of those cut and the headers of the groups the first one sits in,
-    each named by its address.
-    """
-    state = read_state(run)
-    entries = layout(state)
-    texts = ['  ' * e['depth'] + e['header'] if e['type'] in GROUPS else '' for e in entries]
-    by_group: dict[str | None, list[int]] = {}
-    for i, e in enumerate(entries):
-        if e['type'] not in GROUPS:
-            by_group.setdefault(e['group'], []).append(i)
-    for indexes in by_group.values():
-        rows = []
-        for i in indexes:
-            e = entries[i]
-            timed = {
-                'status': 'running' if e['open'] else 'done',
-                'started_at': e['started_at'],
-                'ended_at': e['ended_at'],
-            }
-            middle = [e['label'], e['step']] if e['group'] else [e['label']]
-            rows.append([e['mark'], *middle, e['executor'] or '', duration(timed, now), e['note']])
-        for i, line in zip(indexes, _aligned(rows)):
-            texts[i] = '  ' * entries[i]['depth'] + line
-    out = [f'{os.path.basename(run)} · {state.get("runbook", "")} · {state.get("status", "")}']
-    rows_at = [i for i, e in enumerate(entries) if e['type'] not in GROUPS]
-    if 0 < tail < len(rows_at):
-        cut = rows_at[-tail]
-        above = len(rows_at) - tail
-        out.append(f'… {above} {"row" if above == 1 else "rows"} above')
-        # The row a nested group sits under may be cut, so each header names its group by address.
-        context = [e for e in entries[:cut] if e['type'] in GROUPS and e['id'] in entries[cut]['within']]
-        texts = [
-            '  ' * e['depth'] + f'{e["type"]} {e["id"].removeprefix("main/")}: {e["counts"]}' for e in context
-        ] + texts[cut:]
-    return '\n'.join(out + texts)
 
 
 # ---------- server ----------
@@ -737,8 +665,6 @@ def main(argv: list[str] | None = None) -> int:
     """Run the command in argv (sys.argv[1:] by default); returns the exit code."""
     parser = argparse.ArgumentParser(prog='view.py', description='Show a runbook run.')
     parser.add_argument('run', help='a run directory, or a directory of runs')
-    parser.add_argument('--status', action='store_true', help='print the text status and exit')
-    parser.add_argument('--tail', type=int, help='with --status, only the last N rows')
     parser.add_argument('--port', type=int, default=0, help='port to serve on, a free one by default')
     parser.add_argument(
         '--idle-minutes',
@@ -747,13 +673,8 @@ def main(argv: list[str] | None = None) -> int:
         help=f'stop after this many minutes without a request, {IDLE_MINUTES} by default; 0 never stops',
     )
     args = parser.parse_args(argv)
-    if args.tail is not None and not args.status:
-        parser.error('--tail goes with --status')
     try:
         run = find_run(args.run)
-        if args.status:
-            print(status_text(run, datetime.now(timezone.utc), args.tail or 0))
-            return 0
         with contextlib.suppress(StateUnreadable):
             read_state(run)
     except (RunError, StateUnreadable, WrongFormat) as e:

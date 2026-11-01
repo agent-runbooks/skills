@@ -10,6 +10,10 @@ Engine 2.x runs, made by `make.py`:
 - `20261007-port-modules-running`: `runbook-port-modules/flow.py`, kept here; a foreach whose items each run a parallel: one item done, one with a branch step interrupted and launched again, one in its first step, one not started
 - `20261012-release-checks-running`: `runbook-release-checks/flow.py`, kept here; code steps around an agent step: one done, one failed with a traceback in its log, one whose process ended before its result was saved and that ran again as `build@2`, and one running when its process ended
 
+A real run, kept as it was recorded, with real executors on the demo repository. `make.py` does not make it. The root README shows its final table and links to its files:
+
+- `20261031-slugify-max-length`: `runbook-review-loop` to `ready` with `maxFixRounds` at 1: two reviews with a finding each, the human grants one more round, the third review finds nothing
+
 Engine 1.x runs, `state.json` format 1, kept for the viewer's format-1 path. `make.py` does not make them:
 
 - `20261002-slugify-max-length`: `runbook-task-cycle` to `ready`, recorded before engine 1.1.0, with no executors or times

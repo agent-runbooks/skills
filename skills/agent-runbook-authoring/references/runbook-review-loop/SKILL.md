@@ -68,7 +68,10 @@ Waiting
 
 Status
 
-- If a skill named `runbook-viewer` is available in this session, load it before `start` and do what its "During a run" section says: the status is printed in the same turn as the `flow.py` command that recorded an event, never while waiting for a step. Without the skill, there is no status.
+- By default, show no status during the run: the final state comes with `end`.
+- Before you ask the human a question, run `flow.py <run> status --tail 10` and show its output as it is, in a code block, above the question.
+- If the human asks to see the progress after every step, run `flow.py <run> status --tail 10` after every `flow.py` command that launches or ends a step (`start`, `reply`, `answer`, `interrupted`, `relaunch`), and show its output as it is, in a code block, with no commentary. Never while waiting for a step.
+- If the human asks for the status: `flow.py <run> status`, its output in a code block.
 
 Human steps and side effects
 
@@ -77,7 +80,7 @@ Human steps and side effects
 
 Ending
 
-- When `flow.py` prints `end`, report what it says to the human: the status, the run directory, the file to read. The run is over and these rules no longer bind you.
+- When `flow.py` prints `end`, report what it says to the human: the status, the run directory, the file to read. Then show the table it prints under that as it is, as markdown and not in a code block. The run is over and these rules no longer bind you.
 
 ## Steps
 

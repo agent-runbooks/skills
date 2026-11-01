@@ -144,6 +144,12 @@ class RunbookTestCase(unittest.TestCase):
     def first_line(self, out: str) -> str:
         return out.splitlines()[0]
 
+    def report(self, out: str) -> str:
+        """The output of a command that ended the run, without the final table that follows it."""
+        report, intro, _ = out.partition(f'\n\n{agent_runbooks.TEXT["final_table"]}\n')
+        self.assertTrue(intro, out)
+        return report
+
     def check(self, rb: Runbook) -> tuple[int, str]:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -252,7 +258,7 @@ class ReviewLoopTest(RunbookTestCase):
         self.reply(rb, 'main/fix#3')
         out = self.reply(rb, 'main/review#4', findings=0)
         self.assertEqual(
-            out.strip(),
+            self.report(out),
             f'end: ready (after `main/review#4`). The run is over. Report to the human: status ready, '
             f'run directory {self.run_dir}, read {self.run_dir}/08-review.md.',
         )
@@ -273,7 +279,7 @@ class ReviewLoopTest(RunbookTestCase):
         self.reply(rb, 'main/review', findings=1)
         out = self.call(rb, 'answer', 'main/ask-rounds', '{"choice": "stop"}', 'stop')
         self.assertTrue(out.startswith('end: needs_attention (after `main/ask-rounds`)'))
-        self.assertTrue(out.strip().endswith(f'read {self.run_dir}/01-review.md.'))
+        self.assertTrue(self.report(out).endswith(f'read {self.run_dir}/01-review.md.'))
 
 
 def task_cycle(rb: Runbook) -> None:
@@ -394,7 +400,7 @@ class TaskCycleTest(RunbookTestCase):
         self.assertIn(f'see `{self.run_dir}/07-verify.md`', out)
         out = self.call(self.rb, 'answer', 'main/ask-rounds', 'stop')
         self.assertTrue(out.startswith('end: needs_attention (after `main/ask-rounds`)'))
-        self.assertTrue(out.strip().endswith(f'read {self.run_dir}/07-verify.md.'))
+        self.assertTrue(self.report(out).endswith(f'read {self.run_dir}/07-verify.md.'))
 
     def test_dirty_tree_and_the_human_stops(self) -> None:
         self.start(self.rb)
@@ -663,7 +669,7 @@ class ParallelTest(RunbookTestCase):
         self.reply(rb, 'main/group/b')
         out = self.fail_step(rb, 'main/group/a', 'disk full', status='blocked')
         self.assertEqual(
-            out.strip(),
+            self.report(out),
             f'end: failed (`main/group/a` blocked: disk full). The run is over. Report to the human: '
             f'status failed, run directory {self.run_dir}, read {self.run_dir}/progress.md.',
         )
@@ -847,7 +853,7 @@ class ForeachTest(RunbookTestCase):
         )
         self.assertEqual(self.record('main/sites[b]')['reply'], {'changed': 1, 'url': 'https://b.example'})
         out = self.reply(rb, 'main/summary')
-        self.assertTrue(out.strip().endswith(f'read {index}.'), out)
+        self.assertTrue(self.report(out).endswith(f'read {index}.'), out)
 
     def test_bad_over_files_fail_the_foreach(self) -> None:
         cases = {
@@ -925,7 +931,7 @@ class ForeachTest(RunbookTestCase):
         self.reply(rb, 'main/items#2[x]/work', n=3)
         out = self.reply(rb, 'main/items#2[y]/work', n=4)
         self.assertIn('Report to the human: status ready, run directory', out)
-        self.assertTrue(out.strip().endswith('total 10.'))
+        self.assertTrue(self.report(out).endswith('total 10.'))
 
     def test_a_parallel_and_a_foreach_nest_inside_an_item(self) -> None:
         def declare(rb: Runbook) -> None:
@@ -1021,7 +1027,7 @@ class ForeachTest(RunbookTestCase):
         ) as replays:
             out = self.reply(rb, 'main/plan', contents={'items.json': json.dumps([{'key': 'a'}])})
         self.assertTrue(out.startswith('end: ready (after `main/second`)'), out)
-        self.assertTrue(out.rstrip().endswith(', done.'), out)
+        self.assertTrue(self.report(out).endswith(', done.'), out)
         self.assertLessEqual(replays.call_count, 2)
         self.assertEqual(self.record('main/first')['status'], 'done')
         self.assertEqual(self.record('main/second')['status'], 'done')
@@ -1194,7 +1200,7 @@ class StartTest(RunbookTestCase):
         )
         out = self.reply(self.rb, 'main/second')
         self.assertEqual(
-            out.strip(),
+            self.report(out),
             f'end: ready (after `main/second`). The run is over. Report to the human: '
             f'status ready, run directory {self.run_dir}, read {self.run_dir}/01-b.md.',
         )
@@ -1205,7 +1211,7 @@ class StartTest(RunbookTestCase):
         self.assertEqual(self.call(self.rb).strip(), out.strip())
         self.assertEqual(self.progress().count('- end: ready'), 1)
 
-    def test_log_and_status(self) -> None:
+    def test_log_and_resume(self) -> None:
         self.start(self.rb)
         before = self.state()
         self.assertEqual(self.call(self.rb).strip(), 'still running: `main/first`')
@@ -1534,7 +1540,7 @@ class HumanTest(RunbookTestCase):
     def test_stop_ends_with_the_report(self) -> None:
         out = self.call(self.rb, 'answer', 'main/ask', 'stop')
         self.assertTrue(
-            out.strip().endswith(f'status stopped, run directory {self.run_dir}, read {self.run_dir}/00-x.md.')
+            self.report(out).endswith(f'status stopped, run directory {self.run_dir}, read {self.run_dir}/00-x.md.')
         )
 
     def test_reply_fields_are_taken_as_json(self) -> None:
@@ -1935,6 +1941,241 @@ class TimingTest(RunbookTestCase):
                 ('main/go', 1, 'strong', '2026-10-03T10:04:00Z', None),
             ],
         )
+
+
+# ---------- status and the final table ----------
+
+
+def migrate_sites(rb: Runbook) -> None:
+    """A foreach whose items run a step, then a parallel with a chain that runs a parallel of code calls: three
+    levels of groups. The item billing fails, with | and a line break in its reason, and is skipped."""
+    strong, light = executors(rb)
+    plan = rb.step('plan', executor=strong, prompt='prompts/a.md', writes=['sites.json'], reply={'sites': int})
+    migrate = rb.step('migrate', executor=strong, prompt='prompts/b.md', writes=['migrate.md'])
+    review = rb.step('review', executor=light, prompt='prompts/c.md', writes=['review.md'], reply={'findings': int})
+
+    def run_tests(ctx: agent_runbooks.CodeContext, suite: str) -> dict[str, Any]:
+        return {'status': 'done', 'passed': 12 if suite == 'e2e' else 118}
+
+    tests = rb.code('run-tests', run=run_tests, reply={'passed': int})
+
+    def checks(ctx):
+        yield parallel('checks', unit=tests(suite='unit'), e2e=tests(suite='e2e'))
+
+    def body(ctx, item):
+        yield migrate()
+        if item.key == 'billing':
+            raise StepFailed('users.email | loses\nNOT NULL')
+        yield parallel('verify', a=review(), b=checks)
+
+    @rb.flow
+    def main(ctx):
+        yield plan()
+        yield foreach('migrate', over='sites.json', body=body, on_item_failure='skip', max_concurrent=1)
+        return end('ready')
+
+
+class StatusTest(RunbookTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.rb = self.runbook(migrate_sites)
+        self.start(self.rb)
+        self.reply(self.rb, 'main/plan', {'sites.json': json.dumps([{'key': 'auth'}, {'key': 'billing'}])}, sites=2)
+        self.reply(self.rb, 'main/migrate[auth]/migrate')
+
+    def test_status_and_its_tail(self) -> None:
+        self.assertEqual(
+            self.call(self.rb, 'status'),
+            """\
+run · runbook-test · running
+✓ plan  strong   1:00  sites: 2
+  foreach migrate: 1 running, 1 not started
+  ● [auth]     verify/a     light  11:00
+    parallel verify: 1 done, 1 running
+    ✓ b  checks          6:00
+      parallel checks: 2 done
+      ✓ unit  run-tests  code   1:00  passed: 118
+      ✓ e2e   run-tests  code   1:00  passed: 12
+    ● a  review  light   2:00
+  · [billing]  not started
+""",
+        )
+        self.assertEqual(
+            self.call(self.rb, 'status', '--tail', '2'),
+            """\
+run · runbook-test · running
+… 5 rows above
+  foreach migrate: 1 running, 1 not started
+    parallel migrate[auth]/verify: 1 done, 1 running
+    ● a  review  light   3:00
+  · [billing]  not started
+""",
+        )
+        with mock.patch.object(agent_runbooks, 'utc_now', return_value='2026-10-03T10:30:00Z'):
+            full = self.call(self.rb, 'status')
+            for tail in ('7', '50'):
+                self.assertEqual(self.call(self.rb, 'status', '--tail', tail), full)
+            self.assertIn('\n… 1 row above\n', self.call(self.rb, 'status', '--tail', '6'))
+
+    def test_a_question_and_a_tail_at_the_top_level(self) -> None:
+        self.run_dir = os.path.join(self.root, 'loop')
+        rb = self.runbook(review_loop, brief=str, maxFixRounds=1)
+        self.start(rb, brief='brief.md')
+        self.reply(rb, 'main/implement')
+        self.reply(rb, 'main/review', findings=2)
+        self.reply(rb, 'main/fix')
+        self.reply(rb, 'main/review#2', findings=1)
+        self.assertEqual(
+            self.call(rb, 'status'),
+            """\
+loop · runbook-test · waiting_for_human
+✓ implement   strong   1:00
+✓ review      light    1:00  findings: 2
+✓ fix         strong   1:00
+✓ review#2    light    1:00  findings: 1
+? ask-rounds           1:00  waiting for the human
+""",
+        )
+        self.assertEqual(
+            self.call(rb, 'status', '--tail', '1'),
+            """\
+loop · runbook-test · waiting_for_human
+… 4 rows above
+? ask-rounds           2:00  waiting for the human
+""",
+        )
+
+    def test_status_changes_nothing(self) -> None:
+        def snapshot() -> dict[str, bytes]:
+            paths = [pathlib.Path(self.run_dir, name) for name in sorted(os.listdir(self.run_dir))]
+            return {path.name: path.read_bytes() for path in paths if path.is_file()}
+
+        before = snapshot()
+        os.remove(os.path.join(self.run_dir, 'state.lock'))
+        del before['state.lock']
+        self.call(self.rb, 'status')
+        self.assertEqual(snapshot(), before)
+
+    def test_status_takes_only_a_tail_of_a_whole_number_from_1(self) -> None:
+        for args in (['--tail'], ['--tail', '0'], ['--tail', 'x'], ['--tail', '-1'], ['all'], ['--tail', '1', 'x']):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    self.fails(self.rb, 'status', *args), 'flow.py: usage: flow.py <run> status [--tail N]\n'
+                )
+
+    def test_status_of_a_missing_run(self) -> None:
+        self.run_dir = os.path.join(self.root, 'none')
+        self.assertEqual(self.fails(self.rb, 'status'), f'flow.py: {self.run_dir}/state.json: not found\n')
+        self.assertFalse(os.path.exists(self.run_dir))
+
+
+class FinalTableTest(RunbookTestCase):
+    def table(self, out: str) -> list[str]:
+        """The final table at the end of a command's output."""
+        intro = agent_runbooks.TEXT['final_table']
+        self.assertIn(f'\n\n{intro}\n\n', out)
+        return out.split(f'\n\n{intro}\n\n', 1)[1].splitlines()
+
+    def link(self, name: str) -> str:
+        return f'[{name}]({self.run_dir}/{name})'
+
+    def test_three_levels_of_groups(self) -> None:
+        rb = self.runbook(migrate_sites)
+        self.start(rb)
+        self.reply(rb, 'main/plan', {'sites.json': json.dumps([{'key': 'auth'}, {'key': 'billing'}])}, sites=2)
+        self.reply(rb, 'main/migrate[auth]/migrate')
+        self.reply(rb, 'main/migrate[auth]/verify/a', findings=0)
+        out = self.reply(rb, 'main/migrate[billing]/migrate')
+        self.assertEqual(
+            self.report(out),
+            f'end: ready (after `main/migrate`). The run is over. Report to the human: status ready, '
+            f'run directory {self.run_dir}.',
+        )
+        nbsp = '&nbsp;' * 3
+        self.assertEqual(
+            self.table(out),
+            [
+                '| | step | executor | time | result | files |',
+                '|---|---|---|---|---|---|',
+                f'| ✓ | plan | strong | 1:00 | sites: 2 | {self.link("00-sites.json")} |',
+                f'| ✓ | **foreach migrate** | | | 1 done, 1 failed (billing) | {self.link("01-migrate.index.json")} |',
+                f'| ✓ | {nbsp}[auth] · verify/a | light | 15:00 | | {self.link("08-review.md")} |',
+                f'| ✓ | {nbsp * 2}**parallel verify** | | | 2 done | |',
+                f'| ✓ | {nbsp * 3}b · checks | | 6:00 | | |',
+                f'| ✓ | {nbsp * 4}**parallel checks** | | | 2 done | |',
+                f'| ✓ | {nbsp * 5}unit · run-tests | code | 1:00 | passed: 118 | {self.link("06-run-tests.code.log")} |',
+                f'| ✓ | {nbsp * 5}e2e · run-tests | code | 1:00 | passed: 12 | {self.link("07-run-tests.code.log")} |',
+                f'| ✓ | {nbsp * 3}a · review | light | 2:00 | findings: 0 | {self.link("08-review.md")} |',
+                f'| ✗ | {nbsp}[billing] · migrate | strong | 5:00 | users.email \\| loses NOT NULL | '
+                f'{self.link("10-migrate.md")} |',
+            ],
+        )
+        self.assertEqual(self.call(rb), out, 'the table comes with every end')
+
+    def test_a_foreach_of_more_than_20_items_keeps_only_those_not_done(self) -> None:
+        def declare(rb: Runbook) -> None:
+            def body(ctx, item):
+                if item.key == 'i3':
+                    raise StepFailed('broken')
+                return {'ok': True}
+                yield
+
+            @rb.flow
+            def main(ctx):
+                yield foreach('items', over='items.json', body=body, on_item_failure='skip')
+                return end('ready')
+
+        for count, rows in ((21, ['[i3]']), (20, [f'[i{i}]' for i in range(20)])):
+            with self.subTest(count=count):
+                self.run_dir = os.path.join(self.root, f'run-{count}')
+                os.makedirs(self.run_dir)
+                self.write_input('items.json', [{'key': f'i{i}'} for i in range(count)])
+                table = self.table(self.start(self.runbook(declare)))
+                self.assertEqual(
+                    table[2],
+                    f'| ✓ | **foreach items** | | | {count - 1} done, 1 failed (i3) | {self.link("00-items.index.json")} |',
+                )
+                self.assertEqual([row.split(' | ')[1].removeprefix('&nbsp;' * 3) for row in table[3:]], rows)
+
+    def test_a_foreach_of_more_than_20_items_leaves_out_those_not_started(self) -> None:
+        def declare(rb: Runbook) -> None:
+            def body(ctx, item):
+                if item.key == 'i1':
+                    raise StepFailed('broken')
+                return {'ok': True}
+                yield
+
+            @rb.flow
+            def main(ctx):
+                yield foreach('items', over='items.json', body=body, max_concurrent=1)
+                return end('ready')
+
+        os.makedirs(self.run_dir)
+        self.write_input('items.json', [{'key': f'i{i}'} for i in range(21)])
+        table = self.table(self.start(self.runbook(declare)))
+        self.assertEqual(
+            table[2],
+            f'| ✗ | **foreach items** | | | 1 done, 1 failed (i1), 19 not started | {self.link("00-items.index.json")} |',
+        )
+        self.assertEqual([row.split(' | ')[1].removeprefix('&nbsp;' * 3) for row in table[3:]], ['[i1]'])
+
+    def test_links_are_absolute_and_go_in_angle_brackets_for_a_path_with_spaces(self) -> None:
+        def declare(rb: Runbook) -> None:
+            strong, _ = executors(rb)
+            work = rb.step('work', executor=strong, prompt='prompts/a.md', writes=['a.md', 'b.md'])
+
+            @rb.flow
+            def main(ctx):
+                yield work()
+                return end('ready')
+
+        self.run_dir = os.path.join(self.root, 'my run')
+        rb = self.runbook(declare)
+        self.start(rb)
+        with open(os.path.join(self.run_dir, '00-b.md'), 'w') as f:
+            f.write('b')
+        table = self.table(self.call(rb, 'reply', 'main/work', '{"status": "done"}'))
+        self.assertEqual(table[2:], [f'| ✓ | work | strong | 1:00 | | [00-b.md](<{self.run_dir}/00-b.md>) |'])
 
 
 # ---------- flow.py ----------
@@ -2360,7 +2601,7 @@ class ResultTest(RunbookTestCase):
         )
         self.assertIn('r.files: ["f"]', self.messages['main/use'])
         out = self.reply(rb, 'main/use')
-        self.assertTrue(out.strip().endswith(", w ['f'] 1 h id 4 ['_x']."), out)
+        self.assertTrue(self.report(out).endswith(", w ['f'] 1 h id 4 ['_x']."), out)
 
 
 class DeclarationTest(RunbookTestCase):
@@ -2793,7 +3034,7 @@ class CodeStepTest(RunbookTestCase):
             out = self.start(rb)
         self.assertEqual(r.call_count, 4)
         self.assertEqual(
-            out.strip(),
+            self.report(out),
             f'end: ready (after `main/third`). The run is over. Report to the human: status ready, '
             f'run directory {self.run_dir}, n=4, read {self.run_dir}/01-second.md.',
         )
