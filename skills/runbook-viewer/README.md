@@ -1,6 +1,6 @@
 # runbook-viewer
 
-Shows where a [runbook](../agent-runbook-authoring) run is and what its steps wrote, on a page on localhost, so you don't have to dig through the run directory. The status in the chat comes from the runbook itself: `flow.py <run> status` prints it, and `flow.py` prints a table of every step when the run ends.
+Shows where a [runbook](../agent-runbook-authoring) run is and what its steps wrote, on a page on localhost, so you don't have to dig through the run directory.
 
 The viewer reads runs of engine 1.x and 2.x.
 
