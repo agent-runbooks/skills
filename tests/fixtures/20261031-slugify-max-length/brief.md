@@ -1,0 +1,1 @@
+Add an optional `max_length` parameter to `slugify`. When it is given, the slug is cut to at most `max_length` characters on a word boundary: the cut never splits a word and the result never ends with a hyphen. When even the first word is longer than `max_length`, cut that word to `max_length` characters. `max_length=None`, the default, means no limit.

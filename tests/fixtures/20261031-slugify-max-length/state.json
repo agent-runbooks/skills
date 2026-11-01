@@ -1,0 +1,387 @@
+{
+  "format": 2,
+  "runbook": "runbook-review-loop",
+  "status": "ready",
+  "inputs": {
+    "brief": "brief.md",
+    "repo": "/tmp/rb-demo",
+    "checks": "python3 -m unittest",
+    "maxFixRounds": 1
+  },
+  "calls": [
+    {
+      "id": "main/implement",
+      "attempt": 1,
+      "kind": "step",
+      "step": "implement",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md"
+      },
+      "files": {
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/00-implement.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/00-implement.md"
+      },
+      "started_at": "2026-10-31T20:17:03Z",
+      "ended_at": "2026-10-31T20:18:33Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/review",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 1
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md",
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/00-implement.md",
+        "fix.md": null,
+        "review.md": null
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/01-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "findings still open, 0 when none"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/01-review.md"
+      },
+      "started_at": "2026-10-31T20:18:33Z",
+      "ended_at": "2026-10-31T20:19:57Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/fix",
+      "attempt": 1,
+      "kind": "step",
+      "step": "fix",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/01-review.md",
+        "rounds.md": null
+      },
+      "files": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/02-fix.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/02-fix.md"
+      },
+      "started_at": "2026-10-31T20:19:57Z",
+      "ended_at": "2026-10-31T20:20:54Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/review#2",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 1
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md",
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/00-implement.md",
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/02-fix.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/01-review.md"
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/03-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "findings still open, 0 when none"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/03-review.md"
+      },
+      "started_at": "2026-10-31T20:20:54Z",
+      "ended_at": "2026-10-31T20:22:00Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/ask-rounds",
+      "attempt": 1,
+      "kind": "human",
+      "step": "ask-rounds",
+      "status": "done",
+      "executor": null,
+      "reply": {
+        "choice": "more rounds",
+        "rounds": 1
+      },
+      "note": null,
+      "answer": "One more round. Keep the ValueError on a negative max_length, I want it. Mention the error in the CHANGELOG line so the behaviour is in the release notes.",
+      "inputs": {},
+      "files_in": {},
+      "files": {
+        "rounds.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/04-rounds.md"
+      },
+      "schema": null,
+      "writes": {
+        "rounds.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/04-rounds.md"
+      },
+      "started_at": "2026-10-31T20:22:00Z",
+      "ended_at": "2026-10-31T20:22:32Z"
+    },
+    {
+      "id": "main/fix#2",
+      "attempt": 1,
+      "kind": "step",
+      "step": "fix",
+      "status": "done",
+      "executor": "coder",
+      "reply": {},
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/03-review.md",
+        "rounds.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/04-rounds.md"
+      },
+      "files": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/05-fix.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/05-fix.md"
+      },
+      "started_at": "2026-10-31T20:22:32Z",
+      "ended_at": "2026-10-31T20:23:20Z",
+      "invalid_replies": []
+    },
+    {
+      "id": "main/review#3",
+      "attempt": 1,
+      "kind": "step",
+      "step": "review",
+      "status": "done",
+      "executor": "reviewer",
+      "reply": {
+        "findings": 0
+      },
+      "note": null,
+      "answer": null,
+      "inputs": {},
+      "files_in": {
+        "brief.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/brief.md",
+        "implement.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/00-implement.md",
+        "fix.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/05-fix.md",
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/03-review.md"
+      },
+      "files": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/06-review.md"
+      },
+      "schema": {
+        "type": "object",
+        "description": "With status done, every field but reason is set and reason is null. With failed or blocked, reason is one line and the other fields are null.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "failed",
+              "blocked"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "findings still open, 0 when none"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "findings"
+        ],
+        "additionalProperties": false
+      },
+      "writes": {
+        "review.md": "/tmp/rb-demo/.agent-runbooks/runs/20261031-slugify-max-length/06-review.md"
+      },
+      "started_at": "2026-10-31T20:23:20Z",
+      "ended_at": "2026-10-31T20:24:40Z",
+      "invalid_replies": []
+    }
+  ]
+}

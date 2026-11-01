@@ -39,21 +39,26 @@ def main(ctx):
 
 A step names its executor by description, such as "the cheapest fast model" or "a model from another vendor". The orchestrating session maps it onto what it can launch: its own subagents, or, with [throng-mcp](https://github.com/agent-runbooks/throng-mcp), Claude Code, Codex or OpenCode, so one run can mix vendors.
 
-For example, here is a run halfway through, as `flow.py <run> status` prints it when you ask for the progress. Its runbook, runbook-migrate-sites, is a test fixture of the viewer, not one to install:
+For example, here is how a run of [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop) with `maxFixRounds` at 1 ends: `flow.py` prints the run as a markdown table, and the orchestrator shows it in the chat. The links open each step's output, here in the test fixture the run was copied into:
 
-```
-20261007-migrate-sites-running · runbook-migrate-sites · running
-✓ plan  coder   2:10
-  foreach sites: 1 failed (auth), 1 cancelled, 1 not started
-  ✗ [auth]     verify       reviewer   6:50  users.email loses its NOT NULL constraint
-  ✗ [billing]  approve                 6:50  cancelled
-  · [search]   not started
-  parallel reviews: 1 done, 1 running
-  ✓ a  review    reviewer   3:00  findings: 1
-  ● b  review#2  coder      5:00
-```
+| | step | executor | time | result | files |
+|---|---|---|---|---|---|
+| ✓ | implement | coder | 1:30 | | [00-implement.md](tests/fixtures/20261031-slugify-max-length/00-implement.md) |
+| ✓ | review | reviewer | 1:24 | findings: 1 | [01-review.md](tests/fixtures/20261031-slugify-max-length/01-review.md) |
+| ✓ | fix | coder | 0:57 | | [02-fix.md](tests/fixtures/20261031-slugify-max-length/02-fix.md) |
+| ✓ | review#2 | reviewer | 1:06 | findings: 1 | [03-review.md](tests/fixtures/20261031-slugify-max-length/03-review.md) |
+| ✓ | ask-rounds | | 0:32 | more rounds, rounds: 1 | [04-rounds.md](tests/fixtures/20261031-slugify-max-length/04-rounds.md) |
+| ✓ | fix#2 | coder | 0:48 | | [05-fix.md](tests/fixtures/20261031-slugify-max-length/05-fix.md) |
+| ✓ | review#3 | reviewer | 1:20 | findings: 0 | [06-review.md](tests/fixtures/20261031-slugify-max-length/06-review.md) |
 
-When the run ends, `flow.py` prints the same tree as a markdown table, with links to each step's files, and the orchestrator shows it in the chat.
+During a run, `flow.py <run> status` prints the same tree as text when you ask for the progress.
+
+The [runbook-viewer](skills/runbook-viewer) page follows a run live, with each step's log and output files. Here it is during the same run: two reviews with a finding each, a question to the human, who opens the second review's finding before answering, and a third review with none. The waits between steps are cut.
+
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/agent-runbooks/.github/main/assets/review-loop-run.png">
+  <img src="https://raw.githubusercontent.com/agent-runbooks/.github/main/assets/review-loop-run.gif" alt="A run of runbook-review-loop: the runbook-viewer page opens beside the agent session, the human clicks the second review to read its finding, answers the question, and after the run clicks through the last fix and the first review">
+</picture>
 
 Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):
 
@@ -140,6 +145,10 @@ To change the checks, the models or the project rules of runbook-implement-task,
 
 - The skills load in any harness that reads Agent Skills. Running a runbook takes more: the orchestrating session must launch subagents and learn when they finish.
 - The engine computes the transitions. Whether the orchestrator follows the execution rules is still up to the model; `progress.md` and the review checklist make a deviation visible, not impossible.
+
+## Who uses it
+
+If you run a runbook or wrote one for your team, start a discussion in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each discussion there becomes a line here.
 
 ## License
 

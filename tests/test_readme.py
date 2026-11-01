@@ -1,4 +1,4 @@
-"""The root README's status sample is what the engine prints, and the engine lays out a run as the viewer does: run
+"""The root README's table of a finished run is what the engine prints, and the engine lays out a run as the viewer does: run
 with `python3 -m unittest tests.test_readme -v` from the repository root."""
 
 from __future__ import annotations
@@ -16,19 +16,21 @@ agent_runbooks = importlib.import_module('agent_runbooks')
 view = importlib.import_module('view')
 
 FIXTURES = os.path.join(ROOT, 'tests', 'fixtures')
-RUNNING = os.path.join(FIXTURES, '20261007-migrate-sites-running')
-# The clock the fixture's open attempts are timed against.
-NOW_RUNNING = datetime(2026, 10, 7, 9, 14, 0, tzinfo=timezone.utc)
+ENDED = os.path.join(FIXTURES, '20261031-slugify-max-length')
+# No attempt of the fixture is open, so the clock changes nothing.
+NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
 # The fields of a line of the tree that the engine's copy of the tree code and the viewer's both have.
 TREE_KEYS = ('type', 'id', 'depth', 'within', 'group', 'label', 'step', 'status', 'executor', 'note', 'header')
 
 
 class ReadmeTest(unittest.TestCase):
-    def test_status_sample_is_the_engines_output(self) -> None:
-        state = agent_runbooks.RunState.load(RUNNING)
-        text = agent_runbooks.status_text(RUNNING, state, NOW_RUNNING)
+    def test_final_table_is_the_engines_output(self) -> None:
+        state = agent_runbooks.RunState.load(ENDED)
+        table = '\n'.join(agent_runbooks.final_table(ENDED, state, NOW))
+        # The engine links by absolute path, the README relative to the repository root.
+        table = table.replace(ROOT + os.sep, '')
         with open(os.path.join(ROOT, 'README.md'), encoding='utf-8') as f:
-            self.assertIn('```\n' + text + '\n```\n', f.read())
+            self.assertIn('\n\n' + table + '\n\n', f.read())
 
 
 class TreeTest(unittest.TestCase):
