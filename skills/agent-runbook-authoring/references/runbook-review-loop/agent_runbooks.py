@@ -10,6 +10,7 @@ generator under @rb.flow, and ends with rb.main(). The orchestrator then talks t
     flow.py <run> relaunch <call>                  the human said yes to relaunching a failed side-effect step
     flow.py <run> log '<text>'                     add a line to progress.md
     flow.py <run>                                  nothing new: print what is pending
+    flow.py <run> status [--tail N]                print the run's status, or only its last N rows, and change nothing
     flow.py --check                                validate the declarations
 
 A code step runs inside whichever of these commands reaches it, so a command takes as long as the code it runs.
@@ -26,7 +27,7 @@ imports agent_runbooks the same way from a copy next to it and from the package.
 
 from __future__ import annotations
 
-__version__ = '2.1.0'
+__version__ = '2.2.0'
 
 import sys
 
@@ -414,9 +415,12 @@ LOST_TWICE = 'the owner process disappeared without saving a result twice'
 CORRECTIONS = 1
 
 
+TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+
+
 def utc_now() -> str:
     """The current time as state.json records it: UTC, ISO 8601 to the second, `Z` suffix."""
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return datetime.now(timezone.utc).strftime(TIME_FORMAT)
 
 
 LAUNCH_KEYS = ('executor', 'reply', 'note', 'answer', 'inputs', 'files_in', 'files', 'schema', 'writes')
@@ -1331,6 +1335,7 @@ TEXT = {
     'idle': 'nothing is pending and the run has not ended. Report that to the human with the run directory, and stop.',
     'wait_for_end': 'wait: {labels}. The run ends {status} once they are recorded.',
     'ended': 'end: {status} ({why}). The run is over. Report to the human: status {status}, run directory {run}{report}.',
+    'final_table': 'Then show the human this table as it is, as markdown and not in a code block:',
     'reason': ' ({reason})',
     'report': ', {report}',
     # placeholders inside the commands the orchestrator fills in
@@ -1550,6 +1555,410 @@ def _line_value(value: Any) -> str:
     if isinstance(value, str) and '\n' not in value and '\r' not in value:
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+# ---------- the status of a run ----------
+# What `status` prints and the table `end` prints, over the records as state.json holds them.
+
+MARKS = {
+    'done': '✓',
+    'running': '●',
+    'waiting': '?',
+    'failed': '✗',
+    'interrupted': '✗',
+    'cancelled': '✗',
+    'blocked': '!',
+    'not_started': '·',
+}
+GROUP_KINDS = ('parallel', 'foreach')
+WAITING = 'waiting for the human'
+# A group's header counts its branches or items by status, in this order; failed lists their keys.
+COUNTS = (
+    ('done', ('done',)),
+    ('failed', ('failed', 'blocked', 'interrupted')),
+    ('cancelled', ('cancelled',)),
+    ('running', ('running',)),
+    ('waiting', ('waiting',)),
+    ('not started', ('not_started',)),
+)
+# A foreach of more items than this shows in the final table only the items that did not end done.
+TABLE_ITEMS = 20
+TABLE_INDENT = '&nbsp;' * 3
+TABLE_HEAD = ['| | step | executor | time | result | files |', '|---|---|---|---|---|---|']
+
+
+def status_text(run_dir: str, state: RunState, now: datetime, tail: int = 0) -> str:
+    """The text status: a header line, then the lines of _layout(), indented two spaces per depth.
+
+    The calls of main are aligned among themselves, and the rows of each group among themselves. With tail, only the
+    last tail rows show, after a line with the count of those cut and the headers of the groups the first one sits in,
+    each named by its address.
+    """
+    entries = _layout([record.to_json() for record in state.calls])
+    texts = ['  ' * e['depth'] + e['header'] if e['type'] in GROUP_KINDS else '' for e in entries]
+    by_group: dict[str | None, list[int]] = {}
+    for i, e in enumerate(entries):
+        if e['type'] not in GROUP_KINDS:
+            by_group.setdefault(e['group'], []).append(i)
+    for indexes in by_group.values():
+        rows = []
+        for i in indexes:
+            e = entries[i]
+            middle = [e['label'], e['step']] if e['group'] else [e['label']]
+            rows.append([e['mark'], *middle, e['executor'] or '', _row_duration(e, now), e['note']])
+        for i, line in zip(indexes, _aligned(rows)):
+            texts[i] = '  ' * entries[i]['depth'] + line
+    out = [f'{os.path.basename(run_dir)} · {state.runbook} · {state.status}']
+    rows_at = [i for i, e in enumerate(entries) if e['type'] not in GROUP_KINDS]
+    if 0 < tail < len(rows_at):
+        cut = rows_at[-tail]
+        above = len(rows_at) - tail
+        out.append(f'… {above} {"row" if above == 1 else "rows"} above')
+        # The row a nested group sits under may be cut, so each header names its group by address.
+        context = [e for e in entries[:cut] if e['type'] in GROUP_KINDS and e['id'] in entries[cut]['within']]
+        texts = [
+            '  ' * e['depth'] + f'{e["type"]} {e["id"].removeprefix("main/")}: {e["counts"]}' for e in context
+        ] + texts[cut:]
+    return '\n'.join(out + texts)
+
+
+def _now() -> datetime:
+    """The clock the status times open calls against: utc_now(), parsed."""
+    now = _parse_time(utc_now())
+    assert now is not None
+    return now
+
+
+def final_table(run_dir: str, state: RunState, now: datetime) -> list[str]:
+    """The run's state as a markdown table: a row per line of _layout(), nesting as `&nbsp;` in the step cell, and
+    links to the files of each row that are in the run directory. A foreach of more than TABLE_ITEMS items keeps only
+    the items that did not end done, with what is nested in them."""
+    names = set(os.listdir(run_dir))
+    entries = _layout([record.to_json() for record in state.calls])
+    items: dict[str, list[dict[str, Any]]] = {}
+    for e in entries:
+        if e['type'] == 'item':
+            items.setdefault(e['group'], []).append(e)
+    hidden = {i['id'] for group in items.values() if len(group) > TABLE_ITEMS for i in group if i['status'] == 'done'}
+    lines = list(TABLE_HEAD)
+    for e in entries:
+        address = e['id']
+        if any(address[:i] in hidden for i, c in enumerate(address + '/') if c == '/'):
+            continue
+        if e['type'] in GROUP_KINDS:
+            level = 2 * (e['depth'] - 1)
+            step = f'**{e["type"]} {e["name"]}**'
+            cells = [e['mark'], step, '', '', e['counts'], _links(run_dir, [e['index']], names)]
+        else:
+            level = 0 if e['group'] is None else 2 * (e['depth'] - 1) + 1
+            step = f'{e["label"]} · {e["step"]}' if e['group'] and e['step'] else e['label']
+            time = _row_duration(e, now)
+            cells = [e['mark'], step, e['executor'] or '', time, e['note'], _links(run_dir, e['paths'], names)]
+        cells[1] = TABLE_INDENT * level + cells[1]
+        lines.append('|' + '|'.join(f' {_cell(c)} ' if c else ' ' for c in cells) + '|')
+    return lines
+
+
+def _cell(text: str) -> str:
+    """Text as one table cell: line breaks as spaces, `|` escaped."""
+    return re.sub(r'\r\n|[\r\n]', ' ', text).replace('|', '\\|')
+
+
+def _links(run_dir: str, paths: list[Any], names: set[str]) -> str:
+    """Links to the files of these paths that are in the run directory, matched by name. A target with a space
+    goes in <...>."""
+    links = []
+    for name in dict.fromkeys(os.path.basename(p) for p in paths if isinstance(p, str)):
+        if name in names:
+            target = os.path.join(run_dir, name)
+            links.append(f'[{name}](<{target}>)' if re.search(r'\s', target) else f'[{name}]({target})')
+    return ', '.join(links)
+
+
+def _row_duration(entry: dict[str, Any], now: datetime) -> str:
+    """The duration of a row of _layout(): to now while it is open."""
+    status = 'running' if entry['open'] else 'done'
+    return _duration({'status': status, 'started_at': entry['started_at'], 'ended_at': entry['ended_at']}, now)
+
+
+def _label(call: dict[str, Any]) -> str:
+    """The attempt's address as commands name it, without the leading main/: fix, then fix@2."""
+    attempt = call.get('attempt', 1)
+    full = str(call.get('id', '')) + (f'@{attempt}' if attempt != 1 else '')
+    return full.removeprefix('main/')
+
+
+def _mark(status: Any) -> str:
+    return MARKS.get(str(status), ' ')
+
+
+def _executor_name(call: dict[str, Any]) -> Any:
+    """The executor the attempt ran on, `code` for a code step."""
+    return 'code' if call.get('kind') == 'code' else call.get('executor')
+
+
+def _paths(call: dict[str, Any]) -> list[Any]:
+    """The files the attempt was told to write, what it wrote, and a code step's log."""
+    return [*(call.get('writes') or {}).values(), *(call.get('files') or {}).values(), call.get('log')]
+
+
+def _owner(address: str, groups: dict[str, str]) -> tuple[str, str] | None:
+    """The innermost of groups, address to kind, that the address sits in, with the key of its branch or item there;
+    None for an address of main outside any group."""
+    for end in range(len(address) - 1, 0, -1):
+        cut, group = address[end], address[:end]
+        if (cut, groups.get(group)) in (('/', 'parallel'), ('[', 'foreach')):
+            rest = address[end + 1 :]
+            return group, rest.split('/', 1)[0] if cut == '/' else rest.split(']', 1)[0]
+    return None
+
+
+def _layout(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The lines of the status and of the final table, in the order things were opened.
+
+    Each is a dict with `type`, `id` (an address), `depth` and `within`, the groups around it, outermost first. A
+    group's header, type 'parallel' or 'foreach', has `name` (relative to the row it sits in), `mark`, `counts`,
+    `header` (the line of the text status) and `index`; its branches and items follow it, each followed by its own
+    groups, one level deeper. A row, type 'call', 'branch' or 'item', has `group` (None for a call of main), `label`,
+    `step`, `status`, `mark`, `executor`, `started_at`, `ended_at`, `open`, `note`, and `paths`, the files of the
+    launch it shows. A call of main shows its latest attempt. A branch or an item shows the launch it waits on, else
+    the one that ended last, or for a branch a group directly in it that ended later; its `step` names that launch or
+    group relative to the row.
+    """
+    kinds: dict[str, str] = {}
+    groups: dict[str, dict[str, Any]] = {}
+    members: dict[str, dict[str, dict[str, Any]]] = {}
+    top: list[tuple[str, str]] = []
+    launches: dict[str, list[dict[str, Any]]] = {}
+
+    def member(place: tuple[str, str]) -> dict[str, Any]:
+        return members[place[0]].setdefault(place[1], {'record': None, 'launches': [], 'groups': []})
+
+    for record in calls:
+        address, kind = record['id'], record['kind']
+        place = _owner(address, kinds)
+        if kind in GROUP_KINDS:
+            kinds[address], groups[address], members[address] = kind, record, {}
+            if place is None:
+                top.append(('group', address))
+            else:
+                member(place)['groups'].append(address)
+        elif kind == 'item' and place is not None and kinds[place[0]] == 'foreach':
+            member(place)['record'] = record
+        elif kind in LAUNCH_KINDS and place is None:
+            if address not in launches:
+                launches[address] = []
+                top.append(('call', address))
+            launches[address].append(record)
+        elif kind in LAUNCH_KINDS:
+            while place is not None:
+                member(place)['launches'].append(record)
+                place = _owner(place[0], kinds)
+
+    lines: list[dict[str, Any]] = []
+
+    def add_group(address: str, base: str, depth: int, within: list[str]) -> None:
+        record, kind = groups[address], kinds[address]
+        if kind == 'foreach':
+            listed = [i['key'] for i in record.get('items') or [] if isinstance(i, dict) and 'key' in i]
+            keys = [str(k) for k in dict.fromkeys([*listed, *members[address]])]
+        else:
+            keys = [str(k) for k in dict.fromkeys([*members[address], *(record.get('branches') or {})])]
+        name = address[len(base) + 1 :] if address.startswith(base + '/') else address
+        header: dict[str, Any] = {
+            'type': kind,
+            'id': address,
+            'depth': depth,
+            'within': within,
+            'name': name,
+            'mark': _mark(record['status']),
+            'index': record.get('index'),
+        }
+        lines.append(header)
+        statuses = []
+        for key in keys:
+            found = members[address].get(key) or {'record': None, 'launches': [], 'groups': []}
+            nested = [groups[g] for g in found['groups']] if kind == 'parallel' else []
+            row = _member_row(record, kind, key, found, nested)
+            statuses.append((key, row['status']))
+            lines.append({**row, 'group': address, 'depth': depth, 'within': [*within, address]})
+            for inner in found['groups']:
+                add_group(inner, row['id'], depth + 1, [*within, address])
+        counts = _counts(statuses) or ('no items' if kind == 'foreach' else 'no branches')
+        header['counts'] = record.get('problem') or counts
+        header['header'] = f'{kind} {name}: {header["counts"]}'
+
+    for kind, address in top:
+        if kind == 'group':
+            add_group(address, 'main', 1, [])
+            continue
+        attempts = launches[address]
+        latest = attempts[-1]
+        lines.append(
+            {
+                'type': 'call',
+                'id': address,
+                'depth': 0,
+                'within': [],
+                'group': None,
+                'label': _label(latest),
+                'step': '',
+                'status': latest['status'],
+                'mark': _mark(latest['status']),
+                'executor': _executor_name(latest),
+                'started_at': latest.get('started_at'),
+                'ended_at': latest.get('ended_at'),
+                'open': latest['status'] in OPEN,
+                'note': _summary(latest),
+                'paths': _paths(latest),
+            }
+        )
+    return lines
+
+
+def _member_row(
+    group: dict[str, Any], kind: str, key: str, found: dict[str, Any], nested: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The row of a branch of a parallel or an item of a foreach; nested: the records of the groups right in a branch.
+
+    An item's status is its record's, `not_started` without one; a branch's is the parallel's record of it once the
+    parallel has ended, else running or waiting while a launch in it is open, else that of the launch or nested group
+    that ended last: the parallel records how its branches ended only when it closes.
+    """
+    address = f'{group["id"]}/{key}' if kind == 'parallel' else f'{group["id"]}[{key}]'
+    launches: list[dict[str, Any]] = found['launches']
+    item: dict[str, Any] | None = found['record']
+    opened = [c for c in launches if c['status'] in OPEN]
+    asking = [c for c in opened if c['status'] == 'waiting']
+    # One fixed format: the latest end is the largest string. Calls in nested branches end out of launch order, and
+    # a group ends with or after the calls in it, so it wins a tie.
+    closed = [c for c in [*launches, *nested] if _parse_time(c.get('ended_at')) is not None]
+    last = max(reversed(closed), key=lambda c: str(c['ended_at'])) if closed else None
+    shown = (asking or opened or ([last] if last else launches) or [None])[-1]
+    live = 'waiting' if asking else 'running'
+    branches = group.get('branches')
+    if kind == 'foreach':
+        status = 'not_started' if item is None else live if item['status'] in OPEN else str(item['status'])
+    elif isinstance(branches, dict) and key in branches:
+        status = str(branches[key])
+    elif opened:
+        status = live
+    else:
+        latest = str(shown['status']) if shown else ''
+        status = 'failed' if latest == 'blocked' else latest
+    if item is not None and status == 'done':
+        note = _reply_text(item.get('reply'))
+    elif item is not None and status == 'failed':
+        note = str(item.get('reason') or '')
+    elif status == 'cancelled':
+        note = 'cancelled'
+    elif shown is not None and shown['kind'] in GROUP_KINDS:
+        note = str(shown.get('problem') or '')
+    else:
+        note = _summary(shown) if shown else ''
+    if shown is None:
+        step = 'not started' if status == 'not_started' else ''
+    else:
+        step = shown['id'][len(address) + 1 :] if shown['id'].startswith(address + '/') else str(shown['step'])
+        attempt = shown.get('attempt', 1)
+        step += f'@{attempt}' if attempt != 1 else ''
+    if item is not None:
+        started, ended = item.get('started_at'), item.get('ended_at')
+    else:
+        starts = [str(c['started_at']) for c in [*launches, *nested] if _parse_time(c.get('started_at')) is not None]
+        started = min(starts) if starts else None
+        ended = last.get('ended_at') if last else None
+    return {
+        'type': 'branch' if kind == 'parallel' else 'item',
+        'id': address,
+        'label': key if kind == 'parallel' else f'[{key}]',
+        'step': step,
+        'status': status,
+        'mark': _mark(status),
+        'executor': _executor_name(shown or {}),
+        'started_at': started,
+        'ended_at': ended,
+        'open': status in OPEN,
+        'note': note,
+        'paths': _paths(shown) if shown is not None and shown['kind'] in LAUNCH_KINDS else [],
+    }
+
+
+def _counts(members: list[tuple[str, str]]) -> str:
+    """'1 done, 1 failed (billing), 2 running' for (key, status) pairs: the counts that are not zero."""
+    parts = []
+    for name, statuses in COUNTS:
+        keys = [key for key, status in members if status in statuses]
+        if keys:
+            parts.append(f'{len(keys)} {name} ({", ".join(keys)})' if name == 'failed' else f'{len(keys)} {name}')
+    return ', '.join(parts)
+
+
+def _parse_time(value: Any) -> datetime | None:
+    """A state.json timestamp, or None when it is absent or malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, TIME_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _duration(call: dict[str, Any], now: datetime) -> str:
+    """m:ss or h:mm:ss from started_at to ended_at, or to now for an open attempt; empty without timestamps."""
+    start = _parse_time(call.get('started_at'))
+    stop = now if call.get('status') in OPEN else _parse_time(call.get('ended_at'))
+    if start is None or stop is None:
+        return ''
+    seconds = max(0, int((stop - start).total_seconds()))
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+
+
+def _reply_text(reply: Any) -> str:
+    """A reply as the status shows it: an object's fields as k: v, ..., a string as it is, any other value as JSON."""
+    if isinstance(reply, dict):
+        return ', '.join(
+            f'{k}: {_reply_text(v) if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}'
+            for k, v in reply.items()
+        )
+    if reply is None:
+        return ''
+    return reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
+
+
+def _summary(call: dict[str, Any]) -> str:
+    """The reply fields of a done step, the human's choice and fields, the reason of a failed or blocked one."""
+    status = call['status']
+    reply = dict(call.get('reply') or {})
+    if status == 'waiting':
+        return WAITING
+    if status in ('interrupted', 'cancelled'):
+        return status
+    if status in ('failed', 'blocked'):
+        return str(reply.get('reason', ''))
+    if status != 'done':
+        return ''
+    choice = [str(reply.pop('choice'))] if call['kind'] == 'human' and 'choice' in reply else []
+    return ', '.join([*choice, _reply_text(reply)] if reply else choice)
+
+
+def _aligned(rows: list[list[str]]) -> list[str]:
+    """Rows of [mark, *columns, duration, note] as lines, each column as wide as its widest cell; empty ones go."""
+    if not rows:
+        return []
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    last = len(widths) - 2
+    if widths[last]:
+        widths[last] = max(widths[last], 5)
+    lines = []
+    for row in rows:
+        cells = [
+            row[i].rjust(widths[i]) if i == last else row[i].ljust(widths[i]) for i in range(1, last + 1) if widths[i]
+        ]
+        lines.append(f'{row[0]} {"  ".join(cells)}  {row[-1]}'.rstrip())
+    return lines
 
 
 # ---------- inputs ----------
@@ -1959,8 +2368,19 @@ class Runbook:
         ProgressLog(run_dir).append('orchestrator: ' + ' '.join(args))
         return state
 
-    def _status(self, run_dir: str, args: list[str]) -> RunState:
+    def _resume(self, run_dir: str, args: list[str]) -> RunState:
         return RunState.load(run_dir)
+
+    def _print_status(self, run_dir: str, args: list[str]) -> str:
+        """The text status of `status [--tail N]`. Reads state.json and changes nothing, so it takes no lock."""
+        tail = 0
+        if args:
+            if len(args) != 2 or args[0] != '--tail' or not re.fullmatch(r'[0-9]+', args[1]) or int(args[1]) < 1:
+                raise CommandError(f'usage: flow.py <run> status {STATUS_USAGE}')
+            tail = int(args[1])
+        if not os.path.exists(RunState.path(run_dir)):
+            raise CommandError(f'{RunState.path(run_dir)}: not found')
+        return status_text(run_dir, RunState.load(run_dir), _now(), tail)
 
     # ---------- advancing ----------
 
@@ -2047,6 +2467,7 @@ class Runbook:
         lines = [*renderer.correction(*self._correcting), ''] if self._correcting else []
         if withdrawn:
             lines += [*renderer.withdrawn(withdrawn), '']
+        ended = False
         if plan.ending:
             running = [r for r in replay.latest.values() if r.status == 'running']
             if running:
@@ -2057,11 +2478,15 @@ class Runbook:
                 if state.status != status:
                     log.append(f'end: {status} ({plan.ending.why})')
                 state.status = status
+                ended = True
                 lines += renderer.ended(plan.ending, replay.substitute(plan.ending.end.report, plan.ending.scope))
         else:
             lines += renderer.pending(plan, opened)
             state.status = 'waiting_for_human' if plan.humans else 'running'
         self._write(run_dir, state, schemas, indexes, log)
+        # After the write: the table links the files it made, such as the index of a foreach that ended just now.
+        if ended:
+            lines += ['', TEXT['final_table'], '', *final_table(run_dir, state, datetime.now(timezone.utc))]
         return lines
 
     @staticmethod
@@ -2142,8 +2567,11 @@ class Runbook:
             if self.flow_fn is None:
                 raise CommandError('no flow: decorate the generator function of the flow with @rb.flow')
             self._correcting, self._closed = None, set()
-            name = argv[2] if len(argv) > 2 else 'status'
-            command = COMMANDS.get(name)
+            if len(argv) > 2 and argv[2] == 'status':
+                print(self._print_status(run_dir, argv[3:]))
+                return 0
+            name = argv[2] if len(argv) > 2 else None
+            command = RESUME if name is None else COMMANDS.get(name)
             if command is None:
                 raise CommandError(f'unknown command {name!r}')
             if argv[3:].count('-') > 1:
@@ -2519,5 +2947,7 @@ COMMANDS: dict[str, Command] = {
     'interrupted': Command(Runbook._interrupted, '<call>', 1, 1),
     'relaunch': Command(Runbook._relaunch, '<call>', 1, 1),
     'log': Command(Runbook._log, "'<text>'", 1, None),
-    'status': Command(Runbook._status, '', 0, 0),
 }
+# `flow.py <run>`, without a command.
+RESUME = Command(Runbook._resume, '', 0, 0)
+STATUS_USAGE = '[--tail N]'

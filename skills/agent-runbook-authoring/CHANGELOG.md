@@ -2,6 +2,14 @@
 
 Versions of the engine, `references/agent_runbooks.py`, named `runbook.py` before 2.0.0. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 2.2.0
+
+The status of a run moves from the runbook-viewer skill into the engine, and the default is to show it once, at the end. No change is required in an existing `flow.py`. A runbook takes the new Status and Ending rules from `references/template.md`, and one that declares the engine from PyPI raises its pin to `agent-runbooks>=2.2.0,<3`. A runbook whose rules still point to the viewer's "During a run" section loses the chat status once the viewer is updated: runbook-viewer is now the page only.
+
+- The command that ends a run prints, under the `end:` line, the run's final state as a markdown table for the orchestrator to show as it is: `| | step | executor | time | result | files |`, a row per step, with the result as the status shows it and links to the files the step wrote, by absolute path. A group is a bold header row, `**foreach migrate**`, with its counts and, for a foreach, a link to its index. Its branches and items follow one level deeper. Nesting is three `&nbsp;` per level in the step cell, the one indent that survives being copied into a message and renders in the Claude Code and Codex terminals and in HTML. A foreach of more than 20 items keeps only the items that did not end `done`. `|` in a cell is escaped and line breaks become spaces.
+- `flow.py <run> status [--tail N]` prints the text status that `view.py --status` printed, for a code block: a header line, the tree, and with `--tail` only the last N rows, after the count of those cut and the headers of the groups around the first one. It reads `state.json` and nothing else, takes no lock and runs no code. A plain `flow.py <run>`, which `status` used to be an alias of, still resumes the run.
+- The Execution rules show no status during the run by default. The orchestrator shows `status --tail 10` before it asks the human a question, after every command that launches or ends a step only when the human asks for that, and the full status when the human asks for it.
+
 ## 2.1.0
 
 Code steps. A code step is a function in `flow.py` that `flow.py` runs itself, and its return value is recorded as the call's reply. The tests, a lint or a build become a recorded fact, with no model, no launch and no agent's word to take. No change is required in an existing `flow.py`. A runbook that uses code steps takes the new Execution rules from `references/template.md`, and one that declares the engine from PyPI raises its pin to `agent-runbooks>=2.1.0,<3`.

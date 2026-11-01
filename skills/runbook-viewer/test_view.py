@@ -27,7 +27,6 @@ RUNNING = os.path.join(FIXTURES, '20261007-migrate-sites-running')
 NESTED = os.path.join(FIXTURES, '20261007-port-modules-running')
 CODE = os.path.join(FIXTURES, '20261012-release-checks-running')
 NOW_READY = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
-NOW_QUESTION = datetime(2026, 10, 7, 14, 20, 0, tzinfo=timezone.utc)
 NOW_RUNNING = datetime(2026, 10, 7, 9, 14, 0, tzinfo=timezone.utc)
 NOW_NESTED = datetime(2026, 10, 7, 16, 10, 0, tzinfo=timezone.utc)
 NOW_CODE = datetime(2026, 10, 12, 11, 8, 30, tzinfo=timezone.utc)
@@ -36,7 +35,6 @@ READY_1 = os.path.join(FIXTURES, '20261002-slugify-max-length')
 QUESTION_1 = os.path.join(FIXTURES, '20261003-slugify-transliterate-question')
 RUNNING_1 = os.path.join(FIXTURES, '20261003-slugify-transliterate-running')
 NOW_QUESTION_1 = datetime(2026, 10, 3, 21, 25, 0, tzinfo=timezone.utc)
-NOW_RUNNING_1 = datetime(2026, 10, 3, 21, 31, 0, tzinfo=timezone.utc)
 READS = 'this viewer reads format 1, from runbook.py 1.x, and format 2, from agent_runbooks.py 2.x'
 
 
@@ -58,146 +56,85 @@ class RunDirTestCase(unittest.TestCase):
             f.write(text)
 
 
-class StatusTest(unittest.TestCase):
+def rows(run: str) -> str:
+    """The lines of layout() for a run as text: a group's header, or a row's mark, label, step, executor and note."""
+    lines = []
+    for e in view.layout(view.read_state(run)):
+        if e['type'] in ('parallel', 'foreach'):
+            lines.append('  ' * e['depth'] + e['header'])
+        else:
+            cells = [e['mark'], e['label'], e['step'], e['executor'] or '', e['note']]
+            lines.append('  ' * e['depth'] + '  '.join(cell for cell in cells if cell))
+    return '\n'.join(lines)
+
+
+class LayoutTest(unittest.TestCase):
     def test_finished_run(self) -> None:
         self.assertEqual(
-            view.status_text(READY, NOW_READY),
+            rows(READY),
             """\
-20261007-slugify-max-length · runbook-review-loop · ready
-✓ implement   coder      5:20
-✓ review      reviewer   3:05  findings: 2
-✓ fix@2       coder      2:13
-✓ review#2    reviewer   2:30  findings: 1
-✓ ask-rounds             1:50  more rounds, rounds: 1
-✓ fix#2       coder      1:12
-✓ review#3    reviewer   2:01  findings: 0""",
+✓  implement  coder
+✓  review  reviewer  findings: 2
+✓  fix@2  coder
+✓  review#2  reviewer  findings: 1
+✓  ask-rounds  more rounds, rounds: 1
+✓  fix#2  coder
+✓  review#3  reviewer  findings: 0""",
         )
 
     def test_run_waiting_for_the_human(self) -> None:
         self.assertEqual(
-            view.status_text(QUESTION, NOW_QUESTION),
+            rows(QUESTION),
             """\
-20261007-slugify-transliterate-question · runbook-review-loop · waiting_for_human
-✓ implement   coder      6:02
-✓ review      reviewer   4:10  findings: 3
-✓ fix         coder      3:30
-✓ review#2    reviewer   1:10  findings: 1
-? ask-rounds             5:08  waiting for the human""",
+✓  implement  coder
+✓  review  reviewer  findings: 3
+✓  fix  coder
+✓  review#2  reviewer  findings: 1
+?  ask-rounds  waiting for the human""",
         )
 
     def test_run_with_groups(self) -> None:
         self.assertEqual(
-            view.status_text(RUNNING, NOW_RUNNING),
+            rows(RUNNING),
             """\
-20261007-migrate-sites-running · runbook-migrate-sites · running
-✓ plan  coder   2:10
+✓  plan  coder
   foreach sites: 1 failed (auth), 1 cancelled, 1 not started
-  ✗ [auth]     verify       reviewer   6:50  users.email loses its NOT NULL constraint
-  ✗ [billing]  approve                 6:50  cancelled
-  · [search]   not started
+  ✗  [auth]  verify  reviewer  users.email loses its NOT NULL constraint
+  ✗  [billing]  approve  cancelled
+  ·  [search]  not started
   parallel reviews: 1 done, 1 running
-  ✓ a  review    reviewer   3:00  findings: 1
-  ● b  review#2  coder      5:00""",
+  ✓  a  review  reviewer  findings: 1
+  ●  b  review#2  coder""",
         )
 
     def test_code_steps(self) -> None:
         self.assertEqual(
-            view.status_text(CODE, NOW_CODE),
+            rows(CODE),
             """\
-20261012-release-checks-running · runbook-release-checks · running
-✓ changes  code    0:12  commits: 3
-✗ lint     code    0:00  KeyError: 'max-warnings'
-✓ build@2  code    0:40  wheel: dist/textkit-1.5.0-py3-none-any.whl
-✓ notes    coder   4:30
-● tests    code    1:28""",
+✓  changes  code  commits: 3
+✗  lint  code  KeyError: 'max-warnings'
+✓  build@2  code  wheel: dist/textkit-1.5.0-py3-none-any.whl
+✓  notes  coder
+●  tests  code""",
         )
 
     def test_nested_groups(self) -> None:
         self.assertEqual(
-            view.status_text(NESTED, NOW_NESTED),
+            rows(NESTED),
             """\
-20261007-port-modules-running · runbook-port-modules · running
-✓ plan  coder   1:00
+✓  plan  coder
   foreach modules: 1 done, 2 running, 1 not started
-  ● [core]  checks/tests/fix@2  coder      9:00
+  ●  [core]  checks/tests/fix@2  coder
     parallel checks: 1 done, 1 running
-    ✓ lint   lint   reviewer   0:30  warnings: 0
-    ● tests  fix@2  coder      7:00
-  ✓ [cli]   checks/tests/test   reviewer   6:20  warnings: 2, passed: true
+    ✓  lint  lint  reviewer  warnings: 0
+    ●  tests  fix@2  coder
+  ✓  [cli]  checks/tests/test  reviewer  warnings: 2, passed: true
     parallel checks: 2 done
-    ✓ lint   lint  reviewer   1:00  warnings: 2
-    ✓ tests  test  reviewer   2:50  passed: true
-  ● [web]   port                coder      2:40
-  · [docs]  not started""",
+    ✓  lint  lint  reviewer  warnings: 2
+    ✓  tests  test  reviewer  passed: true
+  ●  [web]  port  coder
+  ·  [docs]  not started""",
         )
-
-    def test_tail_inside_a_nested_group(self) -> None:
-        self.assertEqual(
-            view.status_text(NESTED, NOW_NESTED, tail=3),
-            """\
-20261007-port-modules-running · runbook-port-modules · running
-… 6 rows above
-  foreach modules: 1 done, 2 running, 1 not started
-    parallel modules[cli]/checks: 2 done
-    ✓ tests  test  reviewer   2:50  passed: true
-  ● [web]   port                coder      2:40
-  · [docs]  not started""",
-        )
-
-    def test_tail_at_a_groups_first_row(self) -> None:
-        self.assertEqual(
-            view.status_text(RUNNING, NOW_RUNNING, tail=2),
-            """\
-20261007-migrate-sites-running · runbook-migrate-sites · running
-… 4 rows above
-  parallel reviews: 1 done, 1 running
-  ✓ a  review    reviewer   3:00  findings: 1
-  ● b  review#2  coder      5:00""",
-        )
-
-    def test_tail_at_the_top_level(self) -> None:
-        self.assertEqual(
-            view.status_text(READY, NOW_READY, tail=1),
-            """\
-20261007-slugify-max-length · runbook-review-loop · ready
-… 6 rows above
-✓ review#3    reviewer   2:01  findings: 0""",
-        )
-
-    def test_tail_longer_than_the_rows_shows_everything(self) -> None:
-        for tail in (9, 10, 50):
-            with self.subTest(tail=tail):
-                self.assertEqual(view.status_text(NESTED, NOW_NESTED, tail), view.status_text(NESTED, NOW_NESTED))
-        self.assertIn('… 1 row above', view.status_text(NESTED, NOW_NESTED, 8))
-
-    def test_tail_from_the_command_line(self) -> None:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(view.main([NESTED, '--status', '--tail', '1']), 0)
-        self.assertEqual(
-            out.getvalue().splitlines()[1:],
-            ['… 8 rows above', '  foreach modules: 1 done, 2 running, 1 not started', '  · [docs]  not started'],
-        )
-
-    def test_tail_goes_with_status(self) -> None:
-        for tail in ['10', '0']:
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
-                view.main([NESTED, '--tail', tail])
-            self.assertEqual(caught.exception.code, 2)
-            self.assertIn('view.py: error: --tail goes with --status', err.getvalue())
-
-    def test_readme_shows_the_fixtures(self) -> None:
-        with open(os.path.join(HERE, 'README.md'), encoding='utf-8') as f:
-            samples = f.read().split('```\n')
-        self.assertEqual(samples[1], view.status_text(RUNNING, NOW_RUNNING) + '\n')
-        self.assertEqual(samples[3], view.status_text(NESTED, NOW_NESTED, tail=3) + '\n')
-        with open(os.path.join(HERE, '..', '..', 'README.md'), encoding='utf-8') as f:
-            self.assertIn('```\n' + view.status_text(RUNNING, NOW_RUNNING) + '\n```\n', f.read())
-
-    def test_duration_without_timestamps_is_empty(self) -> None:
-        self.assertEqual(view.duration({'status': 'running'}, NOW_READY), '')
-        self.assertEqual(view.duration({'status': 'done', 'started_at': '2026-10-07T10:00:00Z'}, NOW_READY), '')
 
     def test_free_text_answer_is_the_choice(self) -> None:
         answered = {'kind': 'human', 'status': 'done', 'reply': {'choice': 'stop after this round'}}
@@ -217,9 +154,9 @@ class FormatTest(RunDirTestCase):
                     view.read_state(self.run_dir)
                 self.assertEqual(str(caught.exception), f'{path} is {engine}; {READS}')
 
-    def test_status_and_page_refuse_with_one_line(self) -> None:
+    def test_page_refuses_with_one_line(self) -> None:
         self.write('state.json', json.dumps({'format': 3}))
-        for argv in ([self.run_dir, '--status'], [self.runs]):
+        for argv in ([self.run_dir], [self.runs]):
             err = io.StringIO()
             with self.subTest(argv=argv), contextlib.redirect_stderr(err):
                 self.assertEqual(view.main(argv), 2)
@@ -231,63 +168,51 @@ class Format1Test(unittest.TestCase):
 
     def test_finished_run_without_executors_or_times(self) -> None:
         self.assertEqual(
-            view.status_text(READY_1, NOW_QUESTION_1),
+            rows(READY_1),
             """\
-20261002-slugify-max-length · runbook-task-cycle · ready
-✓ preflight  clean: true
-✓ implement
-✓ checks     passed: true
-✓ review-a   findings: 1
-✓ review-b   findings: 0
-✓ triage     to_fix: 1
-✓ fix
-✓ verify     unresolved: 0, passed: true
-✓ polish     passed: true""",
+✓  preflight  clean: true
+✓  implement
+✓  checks  passed: true
+✓  review-a  findings: 1
+✓  review-b  findings: 0
+✓  triage  to_fix: 1
+✓  fix
+✓  verify  unresolved: 0, passed: true
+✓  polish  passed: true""",
         )
 
     def test_run_waiting_for_the_human(self) -> None:
         self.assertEqual(
-            view.status_text(QUESTION_1, NOW_QUESTION_1),
+            rows(QUESTION_1),
             """\
-20261003-slugify-transliterate-question · runbook-task-cycle · waiting_for_human
-✓ preflight     light    0:39  clean: true
-✓ implement     strong   6:12
-✓ checks        light    0:42  passed: false
-✗ fix-checks    strong   0:08  interrupted
-✓ fix-checks-2  strong   2:13  fixed: true
-✓ checks-2      light    0:36  passed: true
-✓ review-a      strong   4:36  findings: 2
-✓ review-b      second   2:48  findings: 2
-✓ triage        top      3:36  to_fix: 3
-✓ fix           strong   5:18
-✓ verify        strong   3:43  unresolved: 1, passed: true
-✓ fix-2         strong   3:48
-✓ verify-2      strong   3:17  unresolved: 1, passed: true
-? ask-rounds             2:30  waiting for the human""",
+✓  preflight  light  clean: true
+✓  implement  strong
+✓  checks  light  passed: false
+✗  fix-checks  strong  interrupted
+✓  fix-checks-2  strong  fixed: true
+✓  checks-2  light  passed: true
+✓  review-a  strong  findings: 2
+✓  review-b  second  findings: 2
+✓  triage  top  to_fix: 3
+✓  fix  strong
+✓  verify  strong  unresolved: 1, passed: true
+✓  fix-2  strong
+✓  verify-2  strong  unresolved: 1, passed: true
+?  ask-rounds  waiting for the human""",
         )
 
     def test_running_run(self) -> None:
         self.assertEqual(
-            view.status_text(RUNNING_1, NOW_RUNNING_1),
+            rows(RUNNING_1),
             """\
-20261003-slugify-transliterate-running · runbook-task-cycle · running
-✓ preflight     light    0:39  clean: true
-✓ implement     strong   6:12
-✓ checks        light    0:42  passed: false
-✗ fix-checks    strong   0:08  interrupted
-✓ fix-checks-2  strong   2:13  fixed: true
-✓ checks-2      light    0:36  passed: true
-● review-a      strong   3:24
-✓ review-b      second   2:49  findings: 2""",
-        )
-
-    def test_tail_from_the_command_line(self) -> None:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(view.main([READY_1, '--status', '--tail', '2']), 0)
-        self.assertEqual(
-            out.getvalue().splitlines()[1:],
-            ['… 7 rows above', '✓ verify     unresolved: 0, passed: true', '✓ polish     passed: true'],
+✓  preflight  light  clean: true
+✓  implement  strong
+✓  checks  light  passed: false
+✗  fix-checks  strong  interrupted
+✓  fix-checks-2  strong  fixed: true
+✓  checks-2  light  passed: true
+●  review-a  strong
+✓  review-b  second  findings: 2""",
         )
 
     def test_section_with_its_files_and_log_lines(self) -> None:
@@ -374,10 +299,7 @@ class Format1Test(unittest.TestCase):
                 run = os.path.join(tmp, os.path.basename(fixture))
                 shutil.copytree(fixture, run)
                 os.utime(os.path.join(run, 'state.json'), (mtime, mtime))
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(view.main([tmp, '--status', '--tail', '1']), 0)
-            self.assertTrue(out.getvalue().startswith('20261003-slugify-transliterate-question · '))
+            self.assertEqual(os.path.basename(view.find_run(tmp)), '20261003-slugify-transliterate-question')
 
 
 class FilesTest(RunDirTestCase):
