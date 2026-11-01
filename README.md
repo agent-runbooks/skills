@@ -148,7 +148,7 @@ To change the checks, the models or the project rules of runbook-implement-task,
 
 ## Who uses it
 
-No one has said so yet. If you run a runbook or wrote one for your team, start a discussion in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each discussion there becomes a line here.
+If you run a runbook or wrote one for your team, start a discussion in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each discussion there becomes a line here.
 
 ## License
 
