@@ -39,7 +39,7 @@ def main(ctx):
 
 A step names its executor by description, such as "the cheapest fast model" or "a model from another vendor". The orchestrating session maps it onto what it can launch: its own subagents, or, with [throng-mcp](https://github.com/agent-runbooks/throng-mcp), Claude Code, Codex or OpenCode, so one run can mix vendors.
 
-For example, here is a run halfway through, as runbook-viewer prints it into the chat after every step. Its runbook, runbook-migrate-sites, is a test fixture of the viewer, not one to install:
+For example, here is a run halfway through, as `flow.py <run> status` prints it when you ask for the progress. Its runbook, runbook-migrate-sites, is a test fixture of the viewer, not one to install:
 
 ```
 20261007-migrate-sites-running · runbook-migrate-sites · running
@@ -52,6 +52,8 @@ For example, here is a run halfway through, as runbook-viewer prints it into the
   ✓ a  review    reviewer   3:00  findings: 1
   ● b  review#2  coder      5:00
 ```
+
+When the run ends, `flow.py` prints the same tree as a markdown table, with links to each step's files, and the orchestrator shows it in the chat.
 
 Compared with [Claude Code workflows](https://code.claude.com/docs/en/workflows), [Copilot dynamic workflows](https://docs.github.com/en/copilot/concepts/agents/dynamic-workflows) and code orchestrators such as [LangGraph](https://github.com/langchain-ai/langgraph) or [Mastra](https://mastra.ai):
 
@@ -74,10 +76,10 @@ The reasoning behind each row, and where a script fits better, is in [`docs/comp
 | You want to | Go to | You get |
 |---|---|---|
 | write a runbook for your own procedure | [agent-runbook-authoring](skills/agent-runbook-authoring) | a self-contained runbook that runs where this skill is not installed |
-| watch a run | [runbook-viewer](skills/runbook-viewer) | the status above in the chat after every step, and a read-only page on localhost with each step's log and output files |
+| watch a run | [runbook-viewer](skills/runbook-viewer) | a read-only page on localhost that follows the run live, with each step's log and output files |
 | run a ready-made runbook | [agent-runbooks/gallery](https://github.com/agent-runbooks/gallery) | runbooks to install and adapt, starting with [runbook-review-loop](https://github.com/agent-runbooks/gallery/tree/main/skills/runbook-review-loop), whose steps run on the harness's own subagents |
 
-The two skills here stand apart: a runbook needs neither to run, and prints the status by itself when the viewer is installed.
+The two skills here stand apart: a runbook needs neither to run, and its own `flow.py` prints the status in the chat.
 
 ## Install
 
