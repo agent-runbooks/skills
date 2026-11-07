@@ -6,6 +6,7 @@ import contextlib
 import copy
 import io
 import json
+import ntpath
 import os
 import pathlib
 import re
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 from collections.abc import Callable
 from typing import Any
 from unittest import mock
@@ -2153,7 +2155,7 @@ class FinalTableTest(RunbookTestCase):
         return out.split(f'\n\n{intro}\n\n', 1)[1].splitlines()
 
     def link(self, name: str) -> str:
-        return f'[{name}]({self.run_dir}/{name})'
+        return f'[{name}]({urllib.parse.quote(self.run_dir, safe="/:")}/{name})'
 
     def test_three_levels_of_groups(self) -> None:
         rb = self.runbook(migrate_sites)
@@ -2235,7 +2237,7 @@ class FinalTableTest(RunbookTestCase):
         )
         self.assertEqual([row.split(' | ')[1].removeprefix('&nbsp;' * 3) for row in table[3:]], ['[i1]'])
 
-    def test_links_are_absolute_and_go_in_angle_brackets_for_a_path_with_spaces(self) -> None:
+    def test_links_are_absolute_and_url_encoded(self) -> None:
         def declare(rb: Runbook) -> None:
             strong, _ = executors(rb)
             work = rb.step('work', executor=strong, prompt='prompts/a.md', writes=['a.md', 'b.md'])
@@ -2245,13 +2247,28 @@ class FinalTableTest(RunbookTestCase):
                 yield work()
                 return end('ready')
 
-        self.run_dir = os.path.join(self.root, 'my run')
-        rb = self.runbook(declare)
-        self.start(rb)
-        with open(os.path.join(self.run_dir, '00-b.md'), 'w') as f:
-            f.write('b')
-        table = self.table(self.call(rb, 'reply', 'main/work', '{"status": "done"}'))
-        self.assertEqual(table[2:], [f'| ✓ | work | strong | 1:00 | | [00-b.md](<{self.run_dir}/00-b.md>) |'])
+        cases = {
+            'my run': 'my%20run',
+            'checkout#2': 'checkout%232',
+            'a)b': 'a%29b',
+            '<my run': '%3Cmy%20run',
+            'x%20y': 'x%2520y',
+        }
+        for directory, encoded in cases.items():
+            with self.subTest(directory=directory):
+                self.run_dir = os.path.join(self.root, directory)
+                rb = self.runbook(declare)
+                self.start(rb)
+                with open(os.path.join(self.run_dir, '00-b.md'), 'w') as f:
+                    f.write('b')
+                table = self.table(self.call(rb, 'reply', 'main/work', '{"status": "done"}'))
+                link = f'[00-b.md]({urllib.parse.quote(self.root, safe="/:")}/{encoded}/00-b.md)'
+                self.assertEqual(table[2:], [f'| ✓ | work | strong | 1:00 | | {link} |'])
+
+    def test_a_windows_link_has_forward_slashes_and_keeps_the_drive(self) -> None:
+        with mock.patch.object(os, 'sep', '\\'), mock.patch.object(os.path, 'join', ntpath.join):
+            links = agent_runbooks._links('C:\\Users\\max\\my run', ['00-b.md'], {'00-b.md'})
+        self.assertEqual(links, '[00-b.md](C:/Users/max/my%20run/00-b.md)')
 
 
 # ---------- flow.py ----------

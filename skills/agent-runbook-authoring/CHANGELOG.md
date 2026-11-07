@@ -2,6 +2,13 @@
 
 Versions of the engine, `references/agent_runbooks.py`, named `runbook.py` before 2.0.0. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 2.2.2
+
+The links in the table that ends a run are URL-encoded, so a run directory with `#`, `)`, `<` or `%` in its path no longer gives a dead link. No change is required in an existing `flow.py`.
+
+- A link to a step's file takes its absolute path through `urllib.parse.quote`. A path with a space no longer goes in `<...>`: the space becomes `%20`.
+- On Windows the link takes `/` for `\` and keeps the drive as is: `C:/Users/max/run/01-a.md`.
+
 ## 2.2.1
 
 No change is required in an existing `flow.py` or for the orchestrator.

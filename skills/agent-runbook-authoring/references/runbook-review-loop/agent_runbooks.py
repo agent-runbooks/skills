@@ -27,7 +27,7 @@ imports agent_runbooks the same way from a copy next to it and from the package.
 
 from __future__ import annotations
 
-__version__ = '2.2.1'
+__version__ = '2.2.2'
 
 import sys
 
@@ -43,6 +43,7 @@ import os
 import re
 import shlex
 import traceback
+import urllib.parse
 import weakref
 from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
@@ -1667,13 +1668,13 @@ def _cell(text: str) -> str:
 
 
 def _links(run_dir: str, paths: list[Any], names: set[str]) -> str:
-    """Links to the files of these paths that are in the run directory, matched by name. A target with a space
-    goes in <...>."""
+    """Links to the files of these paths that are in the run directory, matched by name. A target is URL-encoded,
+    with `/` as the separator."""
     links = []
     for name in dict.fromkeys(os.path.basename(p) for p in paths if isinstance(p, str)):
         if name in names:
-            target = os.path.join(run_dir, name)
-            links.append(f'[{name}](<{target}>)' if re.search(r'\s', target) else f'[{name}]({target})')
+            target = os.path.join(run_dir, name).replace(os.sep, '/')
+            links.append(f'[{name}]({urllib.parse.quote(target, safe="/:")})')
     return ', '.join(links)
 
 

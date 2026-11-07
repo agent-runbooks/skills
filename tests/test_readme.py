@@ -7,6 +7,7 @@ import importlib
 import os
 import sys
 import unittest
+import urllib.parse
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,7 +29,7 @@ class ReadmeTest(unittest.TestCase):
         state = agent_runbooks.RunState.load(ENDED)
         table = '\n'.join(agent_runbooks.final_table(ENDED, state, NOW))
         # The engine links by absolute path, the README relative to the repository root.
-        table = table.replace(ROOT + os.sep, '')
+        table = table.replace(urllib.parse.quote((ROOT + os.sep).replace(os.sep, '/'), safe='/:'), '')
         with open(os.path.join(ROOT, 'README.md'), encoding='utf-8') as f:
             self.assertIn('\n\n' + table + '\n\n', f.read())
 
