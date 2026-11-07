@@ -369,7 +369,7 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
     calls: dict[str, list[dict[str, Any]]] = {}
 
     def member(place: tuple[str, str]) -> dict[str, Any]:
-        return members[place[0]].setdefault(place[1], {'record': None, 'launches': [], 'groups': []})
+        return members[place[0]].setdefault(place[1], {'record': None, 'launches': [], 'groups': [], 'calls': []})
 
     for record in state['calls']:
         if not isinstance(record, dict) or not isinstance(record.get('id'), str):
@@ -382,6 +382,8 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
                 top.append(('group', address))
             else:
                 member(place)['groups'].append(address)
+                if kinds[place[0]] == 'parallel':
+                    member(place)['calls'].append(record)
         elif kind == 'item' and place is not None and kinds[place[0]] == 'foreach':
             member(place)['record'] = record
         elif kind in LAUNCHES and place is None:
@@ -392,6 +394,7 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
         elif kind in LAUNCHES:
             while place is not None:
                 member(place)['launches'].append(record)
+                member(place)['calls'].append(record)
                 place = owner(place[0], kinds)
 
     lines: list[dict[str, Any]] = []
@@ -413,9 +416,8 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
         lines.append(header)
         statuses = []
         for key in keys:
-            found = members[address].get(key) or {'record': None, 'launches': [], 'groups': []}
-            nested = [groups[g] for g in found['groups']] if kind == 'parallel' else []
-            row = _member_row(record, kind, key, found, nested)
+            found = members[address].get(key) or {'record': None, 'launches': [], 'groups': [], 'calls': []}
+            row = _member_row(record, kind, key, found)
             statuses.append((key, row['status']))
             lines.append({**row, 'group': address, 'depth': depth, 'within': [*within, address]})
             for inner in found['groups']:
@@ -454,10 +456,9 @@ def layout(state: dict[str, Any]) -> list[dict[str, Any]]:
     return lines
 
 
-def _member_row(
-    group: dict[str, Any], kind: str, key: str, found: dict[str, Any], nested: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """The row of a branch of a parallel or an item of a foreach; nested: the records of the groups right in a branch.
+def _member_row(group: dict[str, Any], kind: str, key: str, found: dict[str, Any]) -> dict[str, Any]:
+    """The row of a branch of a parallel or an item of a foreach. found['calls'] holds its launches and, in a branch,
+    the records of the groups right in it, in the order they opened.
 
     An item's status is its record's, `not_started` without one; a branch's is the parallel's record of it once the
     parallel has ended, else running or waiting while a launch in it is open, else that of the launch or nested group
@@ -468,10 +469,18 @@ def _member_row(
     item: dict[str, Any] | None = found['record']
     opened = [c for c in launches if c.get('status') in OPEN]
     asking = [c for c in opened if c.get('status') == 'waiting']
-    # One fixed format: the latest end is the largest string. Calls in nested branches end out of launch order, and
-    # a group ends with or after the calls in it, so it wins a tie.
-    closed = [c for c in [*launches, *nested] if parse_time(c.get('ended_at')) is not None]
-    last = max(reversed(closed), key=lambda c: str(c['ended_at'])) if closed else None
+    # One fixed format: the latest end is the largest string. Calls in nested branches end out of launch order. An end
+    # has second precision: a tie goes to the call opened later, but not over a group it sits in, which ends after it.
+    last: dict[str, Any] | None = None
+    for c in found['calls']:
+        at = c.get('ended_at')
+        if parse_time(at) is None:
+            continue
+        inside = (
+            last is not None and last.get('kind') in GROUPS and c['id'].startswith((f'{last["id"]}/', f'{last["id"]}['))
+        )
+        if last is None or str(at) > str(last['ended_at']) or (str(at) == str(last['ended_at']) and not inside):
+            last = c
     shown = (asking or opened or ([last] if last else launches) or [None])[-1]
     live = 'waiting' if asking else 'running'
     branches = group.get('branches')
@@ -503,7 +512,7 @@ def _member_row(
     if item is not None:
         started, ended = item.get('started_at'), item.get('ended_at')
     else:
-        starts = [str(c['started_at']) for c in [*launches, *nested] if parse_time(c.get('started_at')) is not None]
+        starts = [str(c['started_at']) for c in found['calls'] if parse_time(c.get('started_at')) is not None]
         started = min(starts) if starts else None
         ended = last.get('ended_at') if last else None
     return {

@@ -1975,6 +1975,36 @@ def migrate_sites(rb: Runbook) -> None:
         return end('ready')
 
 
+def same_second(rb: Runbook, first_ok: bool, after_ok: bool | None) -> None:
+    """A parallel outer whose branch a, once its agent step gate replies, runs a parallel inner of the code step first,
+    then the code step after, in one command and so in one second, while b still runs. Branch a handles a failure of
+    inner. With after_ok None, a has no step after inner."""
+    strong, _ = executors(rb)
+
+    def ok(ctx: agent_runbooks.CodeContext) -> dict[str, Any]:
+        return {'status': 'done'}
+
+    def broken(ctx: agent_runbooks.CodeContext) -> dict[str, Any]:
+        raise StepFailed('broken')
+
+    gate = rb.step('gate', executor=strong, prompt='prompts/a.md')
+    first = rb.code('first', run=ok if first_ok else broken)
+    after = rb.code('after', run=ok if after_ok else broken)
+    slow = rb.step('slow', executor=strong, prompt='prompts/b.md')
+
+    def branch_a(ctx):
+        yield gate()
+        with contextlib.suppress(StepFailed):
+            yield parallel('inner', x=first())
+        if after_ok is not None:
+            yield after()
+
+    @rb.flow
+    def main(ctx):
+        yield parallel('outer', a=branch_a, b=slow())
+        return end('ready')
+
+
 class StatusTest(RunbookTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -2067,6 +2097,52 @@ loop · runbook-test · waiting_for_human
         self.run_dir = os.path.join(self.root, 'none')
         self.assertEqual(self.fails(self.rb, 'status'), f'flow.py: {self.run_dir}/state.json: not found\n')
         self.assertFalse(os.path.exists(self.run_dir))
+
+    def test_a_branch_shows_the_call_after_a_nested_group_that_ended_in_the_same_second(self) -> None:
+        self.run_dir = os.path.join(self.root, 'tie')
+        rb = self.runbook(lambda rb: same_second(rb, first_ok=False, after_ok=True))
+        self.start(rb)
+        with mock.patch.object(agent_runbooks, 'utc_now', return_value='2026-10-03T10:30:00Z'):
+            self.reply(rb, 'main/outer/a/gate')
+            self.assertEqual(
+                self.call(rb, 'status'),
+                """\
+tie · runbook-test · running
+  parallel outer: 1 done, 1 running
+  ✓ a  after  code    15:00
+    parallel inner: 1 failed (x)
+    ✗ x  first  code   0:00  broken
+  ● b  slow   strong  14:00
+""",
+            )
+            self.reply(rb, 'main/outer/b')
+            self.assertIn('\n  ✓ a  after  code    15:00\n', self.call(rb, 'status'))
+
+    def test_a_branch_shows_a_failure_after_a_nested_group_that_ended_in_the_same_second(self) -> None:
+        self.run_dir = os.path.join(self.root, 'tie')
+        rb = self.runbook(lambda rb: same_second(rb, first_ok=True, after_ok=False))
+        self.start(rb)
+        with mock.patch.object(agent_runbooks, 'utc_now', return_value='2026-10-03T10:30:00Z'):
+            self.reply(rb, 'main/outer/a/gate')
+            self.assertEqual(
+                self.call(rb, 'status'),
+                """\
+tie · runbook-test · running
+  parallel outer: 1 failed (a), 1 running
+  ✗ a  after  code    15:00  broken
+    parallel inner: 1 done
+    ✓ x  first  code   0:00
+  ● b  slow   strong  14:00
+""",
+            )
+
+    def test_a_branch_shows_a_nested_group_over_the_calls_in_it_that_ended_in_the_same_second(self) -> None:
+        self.run_dir = os.path.join(self.root, 'tie')
+        rb = self.runbook(lambda rb: same_second(rb, first_ok=True, after_ok=None))
+        self.start(rb)
+        with mock.patch.object(agent_runbooks, 'utc_now', return_value='2026-10-03T10:30:00Z'):
+            self.reply(rb, 'main/outer/a/gate')
+            self.assertIn('\n  ✓ a  inner          15:00\n', self.call(rb, 'status'))
 
 
 class FinalTableTest(RunbookTestCase):

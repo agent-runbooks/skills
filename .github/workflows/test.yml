@@ -20,7 +20,8 @@ jobs:
       - run: uv build
 
   runbook-engine:
-    runs-on: ubuntu-latest
+    # setup-python has no Python 3.9 build for Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python: ['3.9', '3.10', '3.11', '3.12', '3.13']
