@@ -2,6 +2,12 @@
 
 Versions of the engine, `references/agent_runbooks.py`, named `runbook.py` before 2.0.0. A major version changes the `flow.py` API and says what to change in an existing `flow.py`. Each release is tagged `agent-runbook-authoring/v<version>`.
 
+## 2.2.1
+
+No change is required in an existing `flow.py` or for the orchestrator.
+
+- The row of a parallel's branch, in the status and the final table, shows the call that ended last in the branch. `ended_at` has second precision, and on a tie a group nested in the branch won over every launch in the branch, including a code step that ran after the group in the same command. A branch that handled the group's failure and went on showed as failed until the parallel closed, and named the group after that. A branch whose step failed after a group that ended `done` showed as done. A tie now goes to the call opened later, and a group wins a tie only over the calls inside it. Replay does not read these rows, so no run took a wrong route.
+
 ## 2.2.0
 
 The status of a run moves from the runbook-viewer skill into the engine, and the default is to show it once, at the end. No change is required in an existing `flow.py`. A runbook takes the new Status and Ending rules from `references/template.md`, and one that declares the engine from PyPI raises its pin to `agent-runbooks>=2.2.0,<3`. A runbook whose rules still point to the viewer's "During a run" section loses the chat status once the viewer is updated: runbook-viewer is now the page only.

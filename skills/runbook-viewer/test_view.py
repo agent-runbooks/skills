@@ -641,6 +641,43 @@ class RowsTest(unittest.TestCase):
         )
         self.assertEqual(rows['main/reviews/a']['attempts'], ['main/reviews/a'])
 
+    def test_a_branch_row_on_a_tie_with_a_nested_group(self) -> None:
+        at = '2026-11-07T10:00:00Z'
+
+        def call(cid: str, kind: str, status: str, **fields: object) -> dict:
+            ended = None if status in view.OPEN else at
+            return {
+                'id': cid,
+                'kind': kind,
+                'step': cid.rsplit('/', 1)[-1],
+                'status': status,
+                'started_at': at,
+                'ended_at': ended,
+                **fields,
+            }
+
+        def row(first: str, after: str | None, closed: bool) -> tuple[str, str]:
+            branches = {'a': after or first, 'b': 'done'} if closed else None
+            calls = [
+                call('main/outer', 'parallel', 'done' if closed else 'running', branches=branches),
+                call('main/outer/a/inner', 'parallel', first, branches={'x': first}),
+                call('main/outer/a/inner/x', 'code', first),
+                call('main/outer/b', 'step', 'done' if closed else 'running'),
+            ]
+            if after is not None:
+                calls.append(call('main/outer/a/after', 'code', after))
+            found = [r for r in view.layout({'calls': calls}) if r['id'] == 'main/outer/a']
+            return found[0]['step'], found[0]['status']
+
+        for first, after, running, closed in (
+            ('failed', 'done', ('after', 'done'), ('after', 'done')),
+            ('done', 'failed', ('after', 'failed'), ('after', 'failed')),
+            ('done', None, ('inner', 'done'), ('inner', 'done')),
+        ):
+            with self.subTest(first=first, after=after):
+                self.assertEqual(row(first, after, closed=False), running)
+                self.assertEqual(row(first, after, closed=True), closed)
+
     def test_relaunched_call_is_one_row(self) -> None:
         snap = view.snapshot(READY, NOW_READY)
         fix = [r for r in snap['rows'] if r['id'] == 'main/fix']
