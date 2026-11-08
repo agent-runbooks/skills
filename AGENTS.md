@@ -32,7 +32,7 @@ A change in the engine's behavior is a release:
 
 ## Plugin
 
-The Claude Code plugin has its own semver in `.claude-plugin/plugin.json`, apart from the engine's, so the viewer or a SKILL.md can ship without an engine release. Claude Code updates an installed plugin only when this version changes. A PR that changes anything in `skills/` except `test_*.py` raises it, and CI refuses one that does not. Major when an existing runbook has to change (an engine major), minor for new behavior, patch for a fix.
+The Claude Code plugin has its own semver in `.claude-plugin/plugin.json`, apart from the engine's, so the viewer or a SKILL.md can ship without an engine release. Claude Code updates an installed plugin only when this version changes. A PR never lowers it, and one that changes anything in `skills/` except `test_*.py` raises it. CI refuses a PR that breaks either rule. Major when an existing runbook has to change (an engine major), minor for new behavior, patch for a fix.
 
 ## Checks
 

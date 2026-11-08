@@ -17,12 +17,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
-      - name: A change to what the plugin ships raises its version
+      - name: The version never goes down, and a change to what the plugin ships raises it
         run: |
-          if git diff --quiet HEAD^1 HEAD -- skills ':(exclude,glob)skills/**/test_*.py'; then exit 0; fi
+          git cat-file -e HEAD^1:.claude-plugin/plugin.json 2>/dev/null || exit 0
           old=$(git show HEAD^1:.claude-plugin/plugin.json | jq -r .version)
           new=$(jq -r .version .claude-plugin/plugin.json)
-          if [ "$old" = "$new" ] || [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n 1)" != "$new" ]; then
+          if [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n 1)" != "$new" ]; then
+            echo "::error file=.claude-plugin/plugin.json::version $new is below $old"
+            exit 1
+          fi
+          if [ "$old" = "$new" ] && ! git diff --quiet HEAD^1 HEAD -- skills ':(exclude,glob)skills/**/test_*.py'; then
             echo "::error file=.claude-plugin/plugin.json::skills/ changed, so raise version above $old"
             exit 1
           fi
