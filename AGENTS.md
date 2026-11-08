@@ -25,10 +25,14 @@ A skill gets copied as plain files into someone else's project and runs there wi
 
 A change in the engine's behavior is a release:
 
-1. Bump `__version__` in `agent_runbooks.py` and `version` in `.claude-plugin/plugin.json`: Claude Code updates an installed plugin only when its version changes.
+1. Bump `__version__` in `agent_runbooks.py`.
 2. Add a `CHANGELOG.md` entry; a major version says what to change in an existing `flow.py`.
 3. Update `references/flow-language.md` and `references/template.md` in the same change when the `flow.py` API or the Execution rules move. A major version also moves the `agent-runbooks` pin in `template.md`.
 4. Tag `agent-runbook-authoring/v<version>` once the commit is on `main`. The tag publishes the engine to PyPI as `agent-runbooks` through `.github/workflows/publish.yml`, which refuses a tag that differs from `__version__`.
+
+## Plugin
+
+The Claude Code plugin has its own semver in `.claude-plugin/plugin.json`, apart from the engine's, so the viewer or a SKILL.md can ship without an engine release. Claude Code updates an installed plugin only when this version changes. A PR that changes anything in `skills/` except `test_*.py` raises it, and CI refuses one that does not. Major when an existing runbook has to change (an engine major), minor for new behavior, patch for a fix.
 
 ## Checks
 

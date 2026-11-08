@@ -9,6 +9,24 @@ permissions:
   contents: read
 
 jobs:
+  plugin-version:
+    # Claude Code updates an installed plugin only when its version changes.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - name: A change to what the plugin ships raises its version
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- skills ':(exclude,glob)skills/**/test_*.py'; then exit 0; fi
+          old=$(git show HEAD^1:.claude-plugin/plugin.json | jq -r .version)
+          new=$(jq -r .version .claude-plugin/plugin.json)
+          if [ "$old" = "$new" ] || [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n 1)" != "$new" ]; then
+            echo "::error file=.claude-plugin/plugin.json::skills/ changed, so raise version above $old"
+            exit 1
+          fi
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -36,8 +54,6 @@ jobs:
         working-directory: skills/runbook-viewer
       - if: matrix.python == '3.13'
         run: python -m unittest tests.test_readme -v
-      - if: matrix.python == '3.13'
-        run: python -m unittest tests.test_plugin -v
       - if: matrix.python == '3.13'
         run: |
           cmp ../agent_runbooks.py agent_runbooks.py
