@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
-      - name: The version never goes down, and a change to what the plugin ships raises it
+      - name: Reject a lower version and require a bump for skills/ changes except test_*.py
         run: |
           git cat-file -e HEAD^1:.claude-plugin/plugin.json 2>/dev/null || exit 0
           old=$(git show HEAD^1:.claude-plugin/plugin.json | jq -r .version)
