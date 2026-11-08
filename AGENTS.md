@@ -30,6 +30,10 @@ A change in the engine's behavior is a release:
 3. Update `references/flow-language.md` and `references/template.md` in the same change when the `flow.py` API or the Execution rules move. A major version also moves the `agent-runbooks` pin in `template.md`.
 4. Tag `agent-runbook-authoring/v<version>` once the commit is on `main`. The tag publishes the engine to PyPI as `agent-runbooks` through `.github/workflows/publish.yml`, which refuses a tag that differs from `__version__`.
 
+## Plugin
+
+The Claude Code plugin has its own semver in `.claude-plugin/plugin.json`, apart from the engine's, so the viewer or a SKILL.md can ship without an engine release. Claude Code updates an installed plugin only when this version changes. A PR never lowers it, and one that changes anything in `skills/` except `test_*.py` raises it. CI refuses a PR that breaks either rule. Major when an existing runbook has to change (an engine major), minor for new behavior, patch for a fix.
+
 ## Checks
 
 Run the steps of `.github/workflows/test.yml` locally before calling a change done. `tests/fixtures/` holds real run folders that `test_view.py` reads; change them together with the tests.
