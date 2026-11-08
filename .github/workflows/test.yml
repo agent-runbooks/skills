@@ -37,6 +37,8 @@ jobs:
       - if: matrix.python == '3.13'
         run: python -m unittest tests.test_readme -v
       - if: matrix.python == '3.13'
+        run: python -m unittest tests.test_plugin -v
+      - if: matrix.python == '3.13'
         run: |
           cmp ../agent_runbooks.py agent_runbooks.py
           python flow.py --check

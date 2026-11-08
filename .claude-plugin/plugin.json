@@ -1,0 +1,14 @@
+{
+  "name": "agent-runbooks",
+  "version": "2.2.2",
+  "description": "Writes runbooks: procedures an agent session runs through subagents, with steps as prompt files and transitions as a few lines of Python on a small engine. Shows a run on a read-only page on localhost that follows it live, with each step's log and output files.",
+  "author": {
+    "name": "Maksim Zemskov",
+    "url": "https://github.com/Nodge"
+  },
+  "homepage": "https://github.com/agent-runbooks/skills#readme",
+  "repository": "https://github.com/agent-runbooks/skills",
+  "license": "MIT",
+  "keywords": ["runbook", "subagents", "orchestration", "skills"],
+  "skills": ["./skills/agent-runbook-authoring", "./skills/runbook-viewer"]
+}

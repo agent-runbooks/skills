@@ -10,12 +10,7 @@
     {
       "name": "agent-runbooks",
       "description": "Writes runbooks: procedures an agent session runs through subagents, with steps as prompt files and transitions as a few lines of Python on a small engine. Shows a run on a read-only page on localhost that follows it live, with each step's log and output files.",
-      "source": "./",
-      "strict": false,
-      "skills": [
-        "./skills/agent-runbook-authoring",
-        "./skills/runbook-viewer"
-      ]
+      "source": "./"
     }
   ]
 }
