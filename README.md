@@ -146,6 +146,12 @@ To change the checks, the models or the project rules of runbook-implement-task,
 - The skills load in any harness that reads Agent Skills. Running a runbook takes more: the orchestrating session must launch subagents and learn when they finish.
 - The engine computes the transitions. Whether the orchestrator follows the execution rules is still up to the model; `progress.md` and the review checklist make a deviation visible, not impossible.
 
+## What leaves your machine
+
+The skills make no network requests and send no telemetry. The engine, `flow.py` and the viewer run on the Python standard library. A run writes its state, step outputs and logs to `.agent-runbooks/runs/<run-id>/` in your project, and the files stay there until you delete them. The viewer only reads that directory and serves its page on 127.0.0.1.
+
+A runbook's steps run as subagents of your agent session, so the model provider of that session processes them, as it does the rest of the session. A runbook that declares the engine from PyPI has uv download it from pypi.org.
+
 ## Who uses it
 
 If you run a runbook or wrote one for your team, start a discussion in [Show and tell](https://github.com/agent-runbooks/skills/discussions/categories/show-and-tell): the procedure in a sentence, the harness that runs it, and a link if it is public. Each discussion there becomes a line here.

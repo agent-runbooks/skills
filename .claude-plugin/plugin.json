@@ -10,6 +10,7 @@
   "repository": "https://github.com/agent-runbooks/skills",
   "documentationUrl": "https://github.com/agent-runbooks/skills#readme",
   "supportUrl": "https://github.com/agent-runbooks/skills/issues",
+  "privacyPolicyUrl": "https://github.com/agent-runbooks/skills#what-leaves-your-machine",
   "license": "MIT",
   "keywords": ["runbook", "subagents", "orchestration", "skills"],
   "skills": ["./skills/agent-runbook-authoring", "./skills/runbook-viewer"]
